@@ -317,19 +317,22 @@ function paint() {
   if (error) banner.push(el("p", "tm-alert", error));
   ui.alerts.replaceChildren(...banner);
 
-  if (src === "dm" && dmPerson && !items.some((m) => (m.from || "—") === dmPerson)) dmPerson = null;   // ушёл из пула (сменилась вкладка) — назад к списку людей
+  // группировка по людям — в «Личке» и в «Все» (владелец 09.10: «во вкладке все тоже сделай по людям группировку
+  // как и в личке»); в «Упоминания»/«Каналы» — как раньше, по сообщению (там чаще важен порядок/канал, не человек)
+  const grouped = src === "dm" || src === "all";
+  if (grouped && dmPerson && !items.some((m) => (m.from || "—") === dmPerson)) dmPerson = null;   // ушёл из пула (сменилась вкладка) — назад к списку людей
 
   if (!loaded) ui.list.replaceChildren(el("p", "tm-empty", "Загружаю…"));
   else if (!items.length) {
     ui.list.replaceChildren(el("p", "tm-empty", tab === "new"
       ? (msgs.size ? "Новых сообщений нет. Разобранные — во вкладке рядом." : "Пока пусто. Первое чтение Teams — в течение минуты после запуска.")
       : "Здесь будут скрытые, отвеченные и переданные хабу сообщения."));
-  } else if (src === "dm" && dmPerson) {
+  } else if (grouped && dmPerson) {
     const back = el("button", "btn small quiet tm-back", "← Все люди");
     back.type = "button";
     back.addEventListener("click", () => { dmPerson = null; paint(); });
     ui.list.replaceChildren(back, ...items.filter((m) => (m.from || "—") === dmPerson).map(card));
-  } else if (src === "dm") {
+  } else if (grouped) {
     ui.list.replaceChildren(...[...byPerson(items)].map(([name, group]) => personRow(name, group)));
   } else ui.list.replaceChildren(...items.map(card));
 }
