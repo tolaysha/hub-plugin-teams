@@ -1,0 +1,63 @@
+/* Вкладка «Teams сообщения»: шапка с фильтрами и лента карточек на всю рабочую область. Только токены хаба
+   (css/tokens.css), кнопки и переключатели — общие .btn и .seg страницы. Префикс tm- (не theme-: занят темой). */
+.tm { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.tm-top { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4) var(--space-5) var(--space-3);
+  border-bottom: 1px solid var(--border); }
+.tm-title-row { display: flex; align-items: baseline; gap: var(--space-3); flex-wrap: wrap; }
+.tm-title { margin: 0; font-size: var(--text-lg); font-weight: 650; }
+.tm-sub { color: var(--muted-foreground); font-size: var(--text-sm); }
+.tm-bar { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.tm-bulk { display: flex; align-items: center; gap: var(--space-2); margin-left: auto; }
+.tm-confirm { font-size: var(--text-sm); }
+.tm-alerts:empty { display: none; }
+.tm-alert { margin: 0; padding: var(--space-2) var(--space-3); border-radius: var(--radius); font-size: var(--text-sm);
+  background: color-mix(in oklch, var(--destructive) 10%, var(--card)); color: var(--destructive); }
+
+.tm-list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: var(--space-3);
+  padding: var(--space-4) var(--space-5); }
+.tm-empty { margin: var(--space-6) auto; color: var(--muted-foreground); text-align: center; max-width: var(--measure); }
+.tm-card { display: flex; flex-direction: column; gap: var(--space-2); max-width: calc(var(--measure) + 12rem);
+  padding: var(--space-3) var(--space-4); border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--card); }
+.tm-card.tm-done { background: transparent; }
+.tm-card.tm-done .tm-text { color: var(--muted-foreground); }
+.tm-head { display: flex; align-items: baseline; gap: var(--space-2); flex-wrap: wrap; min-width: 0; }
+.tm-head .ago, .tm-where { color: var(--muted-foreground); font-size: var(--text-xs); }
+.tm-where { overflow-wrap: anywhere; }
+.tm-from { font-weight: 600; }
+.tm-src { padding: 1px var(--space-2); border-radius: var(--radius-xs); font-size: var(--text-xs); font-weight: 600;
+  background: var(--muted); color: var(--muted-foreground); }
+.tm-src-dm { background: color-mix(in oklch, var(--primary) 14%, var(--card)); color: var(--primary); }
+.tm-src-mention { background: color-mix(in oklch, var(--warning) 18%, var(--card)); color: var(--foreground); }
+.tm-text { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5; }
+.tm-text.tm-clamp { display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden; cursor: pointer; }
+.tm-note { margin: 0; color: var(--muted-foreground); font-size: var(--text-xs); }
+.tm-draft { padding: var(--space-2) var(--space-3); border-left: 3px solid var(--primary); border-radius: var(--radius);
+  background: var(--muted); }
+.tm-draft-by { color: var(--muted-foreground); font-size: var(--text-xs); margin-bottom: var(--space-1); }
+.tm-draft-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.tm-acts { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.tm-link { margin-left: auto; font-size: var(--text-sm); color: var(--muted-foreground); }
+.tm-link:hover { color: var(--foreground); }
+.tm-link:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+
+.tm-panel { display: flex; flex-direction: column; gap: var(--space-3); max-height: min(60vh, 520px); padding: var(--space-3);
+  border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--card); box-shadow: var(--shadow-lift); }
+.tm-panel[hidden] { display: none; }
+.tm-panel-hint { margin: 0; color: var(--muted-foreground); font-size: var(--text-sm); max-width: var(--measure); }
+.tm-find { min-height: 30px; padding: 0 var(--space-3); border: 1px solid var(--input); border-radius: var(--radius);
+  background: var(--background); color: var(--foreground); }
+.tm-find:focus-visible, .tm-chan input:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.tm-groups { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: var(--space-3); }
+.tm-team { margin: 0; padding: 0; border: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: var(--space-1) var(--space-3); }
+.tm-team[hidden] { display: none; }
+.tm-team legend { padding: 0 0 var(--space-1); font-size: var(--text-xs); font-weight: 600; color: var(--muted-foreground);
+  text-transform: uppercase; letter-spacing: 0.04em; }
+.tm-chan { display: flex; align-items: center; gap: var(--space-2); min-height: 28px; font-size: var(--text-sm); cursor: pointer; }
+.tm-chan[hidden] { display: none; }
+.tm-chan span { overflow-wrap: anywhere; }
+.tm-panel-foot { display: flex; align-items: center; gap: var(--space-2); }
+.tm-picked { margin-right: auto; color: var(--muted-foreground); font-size: var(--text-sm); }
+.tm-sus { padding: 1px var(--space-2); border-radius: var(--radius-xs); font-size: var(--text-xs); font-weight: 600;
+  background: color-mix(in oklch, var(--destructive) 14%, var(--card)); color: var(--destructive); cursor: help; }
+.tm-card.tm-card-sus { border-color: color-mix(in oklch, var(--destructive) 45%, var(--border)); }
