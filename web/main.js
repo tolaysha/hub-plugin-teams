@@ -367,7 +367,7 @@ function build(root) {
   const head = el("header", "tm-top");
   const title = el("div", "tm-title-row");
   const sub = el("span", "tm-sub");
-  title.append(el("h2", "tm-title", "Тимс"), sub);
+  title.append(el("h2", "tm-title", "Teams сообщения"), sub);
   const bar = el("div", "tm-bar");
   const tabs = el("div"), srcs = el("div"), bulk = el("div", "tm-bulk");
   const pick = button("Выбрать каналы", "", openPicker);
@@ -385,15 +385,13 @@ function build(root) {
   ui = { root, list: listNode, tabs, srcs, bulk, alerts, sub, pick, panel: panelNode };
 }
 
-// пункт в боковой панели — «Тимс» и число новых рядом (владелец 09.10: «на вкладке напиши просто Тимс, и чтобы
-// было видно сколько новых»). addView своего же плагина с тем же id — не новая запись, а обновление существующей
-// (ext.js:addView просто перезаписывает map по id), так что звать её заново на каждом render — безопасно и дёшево
-function registerView() {
-  const n = count((m) => !done(m));
+export default function register(h) {
+  hub = h;
+  hub.addStyle("web/teams.css");
   hub.addView({
     id: "teams",
-    title: "Тимс",
-    subtitle: n ? `${n} нов.` : "ничего нового",
+    title: "Teams сообщения",
+    subtitle: "личка, упоминания, каналы",
     icon: "web/icon.svg",
     full: true,
     async render(root, snap) {
@@ -403,13 +401,6 @@ function registerView() {
         const first = !loaded;
         if ((await sync()) || first) paint();
       }
-      registerView();   // число новых могло поменяться — обновить подпись в боковой панели
     },
   });
-}
-
-export default function register(h) {
-  hub = h;
-  hub.addStyle("web/teams.css");
-  registerView();
 }
