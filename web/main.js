@@ -28,6 +28,7 @@ let watch = null;            // выбор владельца (ключи кан
 let picking = null;          // открыта панель «Каналы»: Set отмеченных до «Сохранить»
 let since = 0, loading = false, loaded = false, failed = "";
 let tab = "new", src = "all", confirmAll = false, error = "";
+let dmPerson = null;   // личка сгруппирована по людям: имя выбранного — список всех его сообщений, иначе — по одному на человека (последнее)
 let ui = null;
 
 const secs = (iso) => Date.parse(iso) / 1000;
@@ -176,6 +177,36 @@ function button(text, cls, fn, label) {
   return b;
 }
 
+// личка — группа по человеку (владелец 09.10: «видел одно сообщение от человека последнее, захочу — в чела, там всё»):
+// items уже отсортированы по времени убыв. (list()) — первое в группе и есть последнее сообщение человека
+function byPerson(items) {
+  const groups = new Map();
+  for (const m of items) {
+    const key = m.from || "—";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(m);
+  }
+  return groups;
+}
+
+function personRow(name, group) {
+  const latest = group[0];
+  const row = el("article", "tm-card tm-person" + (group.every(done) ? " tm-done" : ""));
+  const head = el("div", "tm-head");
+  head.append(el("span", `tm-src tm-src-${latest.src}`, SRC[latest.src] || latest.src), el("b", "tm-from", name));
+  if (group.length > 1) head.append(el("span", "tm-count", `${group.length}`));
+  head.append(stamp(secs(latest.at)));
+  row.append(head);
+  const text = el("div", "tm-text tm-clamp", latest.text);
+  row.append(text);
+  row.addEventListener("click", () => { dmPerson = name; paint(); });
+  row.setAttribute("role", "button");
+  row.setAttribute("tabindex", "0");
+  row.setAttribute("aria-label", `Переписка с ${name}, ${group.length} сообщени${group.length === 1 ? "е" : "й"}`);
+  row.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); dmPerson = name; paint(); } });
+  return row;
+}
+
 function card(m) {
   const box = el("article", "tm-card" + (done(m) ? " tm-done" : ""));
   const head = el("div", "tm-head");
@@ -257,9 +288,9 @@ function paint() {
   const open = (m) => !done(m);
   const pool = (m) => (tab === "new" ? open(m) : done(m));
   ui.tabs.replaceChildren(seg([["new", `Новые ${count(open)}`], ["done", `Разобранные ${count(done)}`]],
-    tab, (v) => { tab = v; }, "Какие сообщения показать"));
+    tab, (v) => { tab = v; dmPerson = null; }, "Какие сообщения показать"));
   ui.srcs.replaceChildren(seg([["all", "Все"], ...Object.entries(SRCS).map(([k, t]) => [k, `${t} ${count((m) => pool(m) && m.src === k)}`])],
-    src, (v) => { src = v; }, "Откуда"));
+    src, (v) => { src = v; dmPerson = null; }, "Откуда"));
 
   const items = list();
   ui.bulk.replaceChildren();
@@ -286,11 +317,20 @@ function paint() {
   if (error) banner.push(el("p", "tm-alert", error));
   ui.alerts.replaceChildren(...banner);
 
+  if (src === "dm" && dmPerson && !items.some((m) => (m.from || "—") === dmPerson)) dmPerson = null;   // ушёл из пула (сменилась вкладка) — назад к списку людей
+
   if (!loaded) ui.list.replaceChildren(el("p", "tm-empty", "Загружаю…"));
   else if (!items.length) {
     ui.list.replaceChildren(el("p", "tm-empty", tab === "new"
       ? (msgs.size ? "Новых сообщений нет. Разобранные — во вкладке рядом." : "Пока пусто. Первое чтение Teams — в течение минуты после запуска.")
       : "Здесь будут скрытые, отвеченные и переданные хабу сообщения."));
+  } else if (src === "dm" && dmPerson) {
+    const back = el("button", "btn small quiet tm-back", "← Все люди");
+    back.type = "button";
+    back.addEventListener("click", () => { dmPerson = null; paint(); });
+    ui.list.replaceChildren(back, ...items.filter((m) => (m.from || "—") === dmPerson).map(card));
+  } else if (src === "dm") {
+    ui.list.replaceChildren(...[...byPerson(items)].map(([name, group]) => personRow(name, group)));
   } else ui.list.replaceChildren(...items.map(card));
 }
 
@@ -367,7 +407,10 @@ function build(root) {
   const head = el("header", "tm-top");
   const title = el("div", "tm-title-row");
   const sub = el("span", "tm-sub");
-  title.append(el("h2", "tm-title", "Teams сообщения"), sub);
+  const logo = el("img", "tm-logo");
+  logo.src = hub.url("web/teams-logo.svg");
+  logo.alt = "";
+  title.append(logo, el("h2", "tm-title", "Тимс"), sub);
   const bar = el("div", "tm-bar");
   const tabs = el("div"), srcs = el("div"), bulk = el("div", "tm-bulk");
   const pick = button("Выбрать каналы", "", openPicker);
@@ -385,14 +428,17 @@ function build(root) {
   ui = { root, list: listNode, tabs, srcs, bulk, alerts, sub, pick, panel: panelNode };
 }
 
-export default function register(h) {
-  hub = h;
-  hub.addStyle("web/teams.css");
+// пункт в боковой панели — значок как был (владелец 09.10: «в панели слева остался текущий», логотип Teams —
+// только внутри самой вкладки), «Тимс», подпись и число новых — пилюлей, как у «Исполнители N» (sidebar.js:
+// countBadge/.gcount). addView своего же плагина с тем же id — обновление записи, не новая (ext.js:addView), так
+// что звать её заново на каждом render — безопасно и дёшево
+function registerView() {
   hub.addView({
     id: "teams",
-    title: "Teams сообщения",
-    subtitle: "личка, упоминания, каналы",
+    title: "Тимс",
+    subtitle: "Сообщения, каналы, упоминания",
     icon: "web/icon.svg",
+    badge: count((m) => !done(m)),
     full: true,
     async render(root, snap) {
       if (!ui || ui.root !== root) { build(root); paint(); }
@@ -401,6 +447,13 @@ export default function register(h) {
         const first = !loaded;
         if ((await sync()) || first) paint();
       }
+      registerView();   // число новых могло поменяться — обновить бейдж в боковой панели
     },
   });
+}
+
+export default function register(h) {
+  hub = h;
+  hub.addStyle("web/teams.css");
+  registerView();
 }
