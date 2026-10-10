@@ -61,6 +61,14 @@ class WhatsApp(unittest.TestCase):
         self.assertEqual(boxes, {"wa:whatsapp:5491100000001@c.us"})
         self.assertEqual(errors, [])
 
+    def test_unread_media_without_text_still_shows(self):
+        sources.run = fake_run({"new": [
+            {"chat_id": "5491100000004@c.us", "name": "Электрик", "new": 3, "unread": 1,
+             "last": "2026-10-10T09:12-03:00", "preview": ""}]})
+        items, _, _ = sources.whatsapp({"channels": ["whatsapp"]}, NOW)
+        self.assertEqual([i["from"] for i in items], ["Электрик"])
+        self.assertIn("1", items[0]["text"])
+
     def test_one_number_unreadable_is_a_warning_all_unreadable_is_a_failure(self):
         sources.run = fake_run({"--channel a": [], "--channel b": OSError("no tab")})
         _, _, errors = sources.whatsapp({"channels": ["a", "b"]}, NOW)

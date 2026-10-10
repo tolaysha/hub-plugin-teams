@@ -111,8 +111,11 @@ def whatsapp(cfg, now):
         ok += 1
         for r in rows:
             cid, text = r.get("chat_id") or "", (r.get("preview") or "").strip()
-            if not cid or not (r.get("unread") or 0) or not text:
+            n = r.get("unread") or 0
+            if not cid or not n:
                 continue   # всё прочитано или отвечено — внимания не требует
+            if not text:   # последнее — медиа/голосовое: текста нет, но непрочитанное ждёт
+                text = f"Непрочитанных: {n} (фото, голосовое или файл)"
             group = cid.endswith("@g.us")
             t = tier(text)
             if t == "C" or (group and t != "A"):
