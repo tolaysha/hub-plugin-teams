@@ -1,4 +1,4 @@
-// Вкладка «Teams сообщения» (плагин хаба): один список новых сообщений Teams — личка, упоминания
+// Вкладка «Inbox» (плагин хаба; раньше «Тимс», «Teams сообщения»): один список новых сообщений Teams — личка, упоминания
 // владельца, выбранные каналы (кнопка «Выбрать каналы»). Данные — канал плагина `teams`
 // (API 1.2): процесс расширения (main.py) постит {"kind":"msg"} на каждое новое сообщение, {"kind":"answered"}, когда
 // владелец ответил в той же переписке, и список каналов команд {"kind":"channels"} частями. Действия владельца — его
@@ -150,10 +150,10 @@ async function toHub(m, kind) {
   sending.add(m.id);
   paint();
   const text = kind === "work"
-    ? `Сообщение из ${SRC_FROM(m)} — разобрать (вкладка «Тимс»). Прочитай, разбери, предложи план. Любое `
+    ? `Сообщение из ${SRC_FROM(m)} — разобрать (вкладка «Inbox»). Прочитай, разбери, предложи план. Любое `
       + `действие по нему (команда, запуск кода, задача или исполнитель, отправка наружу, доступ к файлам и `
       + `ключам) — только после моей формы.\n\n${ref(m)}`
-    : `Подготовь черновик ответа на сообщение из ${SRC_FROM(m)} (вкладка «Тимс»). Черновик положи под сообщение во `
+    : `Подготовь черновик ответа на сообщение из ${SRC_FROM(m)} (вкладка «Inbox»). Черновик положи под сообщение во `
       + `вкладке: \`hub post teams --reply ${m.post} "<текст черновика>"\` — и спроси меня формой: отправить / поправить / `
       + `не отвечать. Людям в ${SRC_FROM(m)} ничего не отправляй без моего «да».\n\n${ref(m)}`;
   const r = await hub.post("/api/send", { session: HUB, text });
@@ -428,10 +428,7 @@ function build(root) {
   const head = el("header", "tm-top");
   const title = el("div", "tm-title-row");
   const sub = el("span", "tm-sub");
-  const logo = el("img", "tm-logo");
-  logo.src = hub.url("web/teams-logo.svg");
-  logo.alt = "";
-  title.append(logo, el("h2", "tm-title", "Тимс"), sub);
+  title.append(el("h2", "tm-title", "Inbox"), sub);   // логотип Teams убран: здесь и WhatsApp, и почта (владелец 10.10)
   const bar = el("div", "tm-bar");
   const tabs = el("div"), srcs = el("div"), bulk = el("div", "tm-bulk");
   const pick = button("Выбрать каналы", "", openPicker);
@@ -450,13 +447,13 @@ function build(root) {
 }
 
 // пункт в боковой панели — значок как был (владелец 09.10: «в панели слева остался текущий», логотип Teams —
-// только внутри самой вкладки), «Тимс», подпись и число новых — пилюлей, как у «Исполнители N» (sidebar.js:
+// только внутри самой вкладки), «Inbox», подпись и число новых — пилюлей, как у «Исполнители N» (sidebar.js:
 // countBadge/.gcount). addView своего же плагина с тем же id — обновление записи, не новая (ext.js:addView), так
 // что звать её заново на каждом render — безопасно и дёшево
 function registerView() {
   hub.addView({
-    id: "teams",
-    title: "Тимс",
+    id: "inbox",   // адрес #/x/inbox; канал плагина по-прежнему teams (hub feed teams)
+    title: "Inbox",
     subtitle: "Teams, WhatsApp, почта",
     icon: "web/icon.svg",
     badge: count((m) => !done(m)),
@@ -475,6 +472,7 @@ function registerView() {
 
 export default function register(h) {
   hub = h;
+  if (location.hash === "#/x/teams") location.hash = "#/x/inbox";   // прежний адрес вкладки
   hub.addStyle("web/teams.css");
   registerView();
 }
