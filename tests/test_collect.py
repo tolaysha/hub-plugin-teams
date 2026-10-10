@@ -202,5 +202,19 @@ class Safety(unittest.TestCase):
         self.assertEqual(sent, [])
 
 
+class LatestIncoming(unittest.TestCase):
+    def test_newest_foreign_message_across_chats(self):
+        chats = {"value": [
+            {"chatType": "oneOnOne", "lastMessagePreview": {"createdDateTime": "2026-10-10T08:00:00Z", "from": {"user": {"id": ME, "displayName": "Я"}}}},
+            {"chatType": "oneOnOne", "lastMessagePreview": {"createdDateTime": "2026-10-09T10:00:00Z", "from": {"user": {"id": "a", "displayName": "Аня"}}}},
+            {"chatType": "group", "topic": "Команда", "lastMessagePreview": {"createdDateTime": "2026-10-08T10:00:00Z", "from": {"user": {"id": "b", "displayName": "Боря"}}}}]}
+
+        class M:
+            def call(self, tool, args):
+                return chats
+        self.assertEqual(collect.latest_incoming(M(), ME),
+                         {"from": "Аня", "where": "Личка", "at": "2026-10-09T10:00:00Z"})
+
+
 if __name__ == "__main__":
     unittest.main()

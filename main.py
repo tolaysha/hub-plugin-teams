@@ -163,6 +163,7 @@ class Reader:
     def __init__(self):
         self.mcp = None
         self.channels, self.listed = {}, 0
+        self.last_in = None   # самое свежее чужое сообщение (collect.latest_incoming)
 
     def connect(self, st):
         self.mcp = mcp.Mcp()
@@ -213,6 +214,7 @@ class Reader:
             own_cut = cutoff if k in since else iso(now - FIRST_BACK)
             items += collect.channel_posts(self.mcp, cid, self.channels[cid], own_cut, me["id"], owner_last)
         self.next_since = {channel_key(cid): since.get(channel_key(cid)) or iso(now) for cid in watched}
+        self.last_in = collect.latest_incoming(self.mcp, me["id"])
         if me["name"]:
             items += collect.channel_mentions(self.mcp, cutoff, me["mail"], me["name"], self.channels, skip=set(watched))
         return items, owner_last
@@ -273,6 +275,14 @@ def main():
             post({"kind": "status", "ok": True, "at": iso(now)})
         st["fails"] = 0
         fresh = tick(st, items, owner_last, now)
+        # доказательство, что чтение идёт: последнее чужое сообщение — при смене и раз в DIR_EVERY (канал хранит
+        # 500 постов, чаще нельзя); страница пишет его вместо «Первое чтение…» (владелец 10.10: «ничего не читает»)
+        if reader.last_in and (reader.last_in != st.get("last_in")
+                               or (last_status := st.get("status_at")) is None
+                               or (now - datetime.strptime(last_status, "%Y-%m-%dT%H:%M:%SZ").replace(
+                                   tzinfo=timezone.utc)).total_seconds() > DIR_EVERY):
+            post({"kind": "status", "ok": True, "at": iso(now), "last": reader.last_in})
+            st["last_in"], st["status_at"] = reader.last_in, iso(now)
         if fresh:
             print(f"{iso(now)} teams: новых {len(fresh)}", file=sys.stderr, flush=True)
         save(st)

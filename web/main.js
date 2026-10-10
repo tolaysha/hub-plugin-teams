@@ -21,6 +21,13 @@ const hidden = new Set();
 const work = new Map();      // id → ts: передано хабу в работу
 const draft = new Map();     // id → ts: черновик запрошен
 const replies = new Map();   // номер поста сообщения → [{by, text, ts}] — черновики от сессий
+// пусто: что чтение идёт, а нового нет — со ссылкой на последнее входящее (последний пост status процесса)
+function emptyNote() {
+  const l = status?.ok && status.last;
+  if (!l) return "Teams подключён, новых сообщений нет.";
+  const when = new Date(l.at).toLocaleString("ru", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+  return `Teams читается, новых сообщений нет. Последнее входящее — ${l.from || "кто-то"} (${l.where}), ${when}.`;
+}
 let status = null;           // {ok, error, at} — последнее, что сказал процесс о чтении Teams
 const dirs = new Map();      // sig → {of, parts: Map(part → items), default} — список каналов от процесса, частями
 let directory = null;        // последний целый: {items: [[ключ, команда, канал]], default: [ключ]}
@@ -325,7 +332,7 @@ function paint() {
   if (!loaded) ui.list.replaceChildren(el("p", "tm-empty", "Загружаю…"));
   else if (!items.length) {
     ui.list.replaceChildren(el("p", "tm-empty", tab === "new"
-      ? (msgs.size ? "Новых сообщений нет. Разобранные — во вкладке рядом." : "Пока пусто. Первое чтение Teams — в течение минуты после запуска.")
+      ? (msgs.size ? "Новых сообщений нет. Разобранные — во вкладке рядом." : emptyNote())
       : "Здесь будут скрытые, отвеченные и переданные хабу сообщения."));
   } else if (grouped && dmPerson) {
     const back = el("button", "btn small quiet tm-back", "← Все люди");

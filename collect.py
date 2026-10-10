@@ -160,3 +160,22 @@ def channel_mentions(mcp, cutoff, me_mail, name, channels=None, skip=(), size=25
                         "from": mail.get("name") or "", "text": summary, "at": r["createdDateTime"],
                         "link": r.get("webLink") or "", "mention": True})
     return out
+
+
+def latest_incoming(mcp, me, top=30):
+    """Самое свежее чужое сообщение среди последних чатов (по превью) — доказательство во вкладке, что чтение идёт, а
+    нового просто нет: {from, where, at} или None."""
+    data = mcp.call("list-chats", {"$top": top, "$expand": "lastMessagePreview",
+                                   "$orderby": "lastMessagePreview/createdDateTime desc"})
+    best = None
+    for c in data.get("value", []):
+        p = c.get("lastMessagePreview") or {}
+        who = ((p.get("from") or {}).get("user") or {})
+        at = p.get("createdDateTime") or ""
+        if not at or not who.get("id") or who["id"] == me or p.get("deletedDateTime"):
+            continue
+        if best is None or at > best["at"]:
+            best = {"from": who.get("displayName") or "",
+                    "where": "Личка" if c.get("chatType") == "oneOnOne" else (c.get("topic") or "Групповой чат"),
+                    "at": at}
+    return best
