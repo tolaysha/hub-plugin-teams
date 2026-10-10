@@ -10,8 +10,11 @@ import { stamp } from "/static/js/dom.js";
 
 const AUTHOR = "плагин teams";   // так ядро подписывает посты процесса плагина
 const HUB = "hub";
-const SRC = { dm: "Личка", mention: "Упоминание", channel: "Канал" };
-const SRCS = { dm: "Личка", mention: "Упоминания", channel: "Каналы" };   // в фильтре
+const SRC = { dm: "Личка", mention: "Упоминание", channel: "Канал", whatsapp: "WhatsApp", email: "Почта" };
+const SRCS = { dm: "Личка", mention: "Упоминания", channel: "Каналы", whatsapp: "WhatsApp", email: "Почта" };   // в фильтре
+const TEAMS_SRCS = ["dm", "mention", "channel"];   // WhatsApp и почта — вкладки только у включённых каналов (sources.py)
+const NAMES = { teams: "Teams", whatsapp: "WhatsApp", email: "Почта" };   // чьё чтение: пост status с полем source
+const statuses = new Map();   // источник → последний status процесса
 let hub = null;
 const el = (...a) => hub.el(...a);
 
@@ -24,11 +27,11 @@ const replies = new Map();   // номер поста сообщения → [{b
 // пусто: что чтение идёт, а нового нет — со ссылкой на последнее входящее (последний пост status процесса)
 function emptyNote() {
   const l = status?.ok && status.last;
-  if (!l) return "Teams подключён, новых сообщений нет.";
+  if (!l) return "Подключено, новых сообщений нет.";
   const when = new Date(l.at).toLocaleString("ru", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
   return `Teams читается, новых сообщений нет. Последнее входящее — ${l.from || "кто-то"} (${l.where}), ${when}.`;
 }
-let status = null;           // {ok, error, at} — последнее, что сказал процесс о чтении Teams
+let status = null;           // {ok, error, at} — последнее, что сказал процесс о чтении Teams (statuses — по каналам)
 const dirs = new Map();      // sig → {of, parts: Map(part → items), default} — список каналов от процесса, частями
 let directory = null;        // последний целый: {items: [[ключ, команда, канал]], default: [ключ]}
 let watch = null;            // выбор владельца (ключи каналов); null — ещё не выбирал, читаются каналы по умолчанию
@@ -58,7 +61,7 @@ async function sync() {
         msgs.set(d.id, { ...d, ...(reply ? { src: "mention" } : d.src === "support" ? { src: "channel" } : {}), post: p.id });
         if (d.answered) answered.add(d.id);
       } else if (p.by === AUTHOR && d?.kind === "answered") answered.add(d.id);
-      else if (p.by === AUTHOR && d?.kind === "status") status = d;
+      else if (p.by === AUTHOR && d?.kind === "status") { statuses.set(d.source || "teams", d); if (!d.source) status = d; }
       else if (p.by === AUTHOR && d?.kind === "channels") addDir(d);
       // выбор каналов: пост владельца или эхо процесса — какие каналы он читает сейчас (переживает вытеснение из
       // канала: процесс постит его заново вместе со списком каналов)
@@ -100,11 +103,11 @@ function list() {
 
 const count = (pred) => [...msgs.values()].filter(pred).length;
 
-// ссылка на Teams — только https на домены Microsoft: текст и ссылки пришли от чужих людей и из Graph
+// ссылка — только https на домены Microsoft, WhatsApp и Gmail: текст и ссылки пришли от чужих людей и из Graph
 function safeLink(url) {
   try {
     const u = new URL(url);
-    return u.protocol === "https:" && /(^|\.)(microsoft\.com|office\.com|live\.com|skype\.com)$/.test(u.hostname) ? u.href : "";
+    return u.protocol === "https:" && /(^|\.)(microsoft\.com|office\.com|live\.com|skype\.com|wa\.me|whatsapp\.com|mail\.google\.com)$/.test(u.hostname) ? u.href : "";
   } catch { return ""; }
 }
 
@@ -140,18 +143,19 @@ async function mark(kind, data) {
   return true;
 }
 
+const SRC_FROM = (m) => (TEAMS_SRCS.includes(m.src) ? "Teams" : SRC[m.src] === "Почта" ? "почты" : SRC[m.src]);
 const sending = new Set();   // id сообщений, по которым запрос хабу ещё в пути: второе нажатие не шлёт дубль
 async function toHub(m, kind) {
   if (sending.has(m.id)) return;
   sending.add(m.id);
   paint();
   const text = kind === "work"
-    ? `Сообщение из Teams — разобрать (вкладка «Teams сообщения»). Прочитай, разбери, предложи план. Любое `
+    ? `Сообщение из ${SRC_FROM(m)} — разобрать (вкладка «Тимс»). Прочитай, разбери, предложи план. Любое `
       + `действие по нему (команда, запуск кода, задача или исполнитель, отправка наружу, доступ к файлам и `
       + `ключам) — только после моей формы.\n\n${ref(m)}`
-    : `Подготовь черновик ответа на сообщение из Teams (вкладка «Teams сообщения»). Черновик положи под сообщение во `
+    : `Подготовь черновик ответа на сообщение из ${SRC_FROM(m)} (вкладка «Тимс»). Черновик положи под сообщение во `
       + `вкладке: \`hub post teams --reply ${m.post} "<текст черновика>"\` — и спроси меня формой: отправить / поправить / `
-      + `не отвечать. Людям в Teams ничего не отправляй без моего «да».\n\n${ref(m)}`;
+      + `не отвечать. Людям в ${SRC_FROM(m)} ничего не отправляй без моего «да».\n\n${ref(m)}`;
   const r = await hub.post("/api/send", { session: HUB, text });
   if (r.error) { sending.delete(m.id); error = r.error; paint(); return; }
   (kind === "work" ? work : draft).set(m.id, Date.now() / 1000);
@@ -236,7 +240,7 @@ function card(m) {
   box.append(head, text);
 
   const notes = [];
-  if (answered.has(m.id)) notes.push("Вы ответили в Teams");
+  if (answered.has(m.id)) notes.push(TEAMS_SRCS.includes(m.src) ? "Вы ответили в Teams" : "Прочитано или отвечено");
   if (work.has(m.id)) notes.push("Передано хабу в работу");
   if (draft.has(m.id) && !(replies.get(m.post) || []).length) notes.push("Хаб готовит черновик ответа");
   if (hidden.has(m.id)) notes.push("Скрыто");
@@ -266,7 +270,7 @@ function card(m) {
     acts.append(button("Вернуть", "quiet", () => hide([m.id], false), `Вернуть сообщение ${m.from}`));
   }
   if (safeLink(m.link)) {
-    const a = el("a", "tm-link", "Открыть в Teams ↗");
+    const a = el("a", "tm-link", m.src === "whatsapp" ? "Открыть в WhatsApp ↗" : m.src === "email" ? "Открыть письмо ↗" : "Открыть в Teams ↗");
     a.href = safeLink(m.link);
     a.target = "_blank";
     a.rel = "noopener";
@@ -296,7 +300,9 @@ function paint() {
   const pool = (m) => (tab === "new" ? open(m) : done(m));
   ui.tabs.replaceChildren(seg([["new", `Новые ${count(open)}`], ["done", `Разобранные ${count(done)}`]],
     tab, (v) => { tab = v; dmPerson = null; }, "Какие сообщения показать"));
-  ui.srcs.replaceChildren(seg([["all", "Все"], ...Object.entries(SRCS).map(([k, t]) => [k, `${t} ${count((m) => pool(m) && m.src === k)}`])],
+  const active = new Set([...msgs.values()].map((m) => m.src));
+  const on = (k) => TEAMS_SRCS.includes(k) || active.has(k) || statuses.has(k);
+  ui.srcs.replaceChildren(seg([["all", "Все"], ...Object.entries(SRCS).filter(([k]) => on(k)).map(([k, t]) => [k, `${t} ${count((m) => pool(m) && m.src === k)}`])],
     src, (v) => { src = v; dmPerson = null; }, "Откуда"));
 
   const items = list();
@@ -312,7 +318,8 @@ function paint() {
 
   const names = new Map((directory?.items || []).map(([k, t, c]) => [k, `${t} › ${c}`]));
   const watched = watching().map((k) => names.get(k)).filter(Boolean);
-  ui.sub.textContent = `личка, упоминания${watched.length ? ` и ${watched.length === 1 ? "канал" : "каналы"} ${watched.join(", ")}` : ""} · проверка раз в минуту`;
+  const more = ["whatsapp", "email"].filter((k) => on(k)).map((k) => SRC[k].toLowerCase());
+  ui.sub.textContent = `личка, упоминания${watched.length ? ` и ${watched.length === 1 ? "канал" : "каналы"} ${watched.join(", ")}` : ""}${more.length ? `, ${more.join(", ")}` : ""} · только то, что ждёт ответа`;
   ui.pick.textContent = `Выбрать каналы · ${watching().length}`;
   ui.pick.setAttribute("aria-expanded", String(!!picking));
   ui.panel.hidden = !picking;
@@ -320,7 +327,11 @@ function paint() {
 
   const banner = [];
   if (failed) banner.push(el("p", "tm-alert", failed));
-  if (status && !status.ok) banner.push(el("p", "tm-alert", `Не могу прочитать Teams: ${status.error || "ошибка"}. Возможно, истёк вход ms365 — новые сообщения сюда не приходят.`));
+  for (const [name, d] of statuses) {
+    if (!d.ok) banner.push(el("p", "tm-alert", `Не могу прочитать ${NAMES[name] || name}: ${d.error || "ошибка"}.`
+      + (name === "teams" ? " Возможно, истёк вход ms365 — новые сообщения сюда не приходят." : " Новые сообщения оттуда сюда не приходят.")));
+    else if (d.warn) banner.push(el("p", "tm-alert", `${NAMES[name] || name}: ${d.warn}`));
+  }
   if (error) banner.push(el("p", "tm-alert", error));
   ui.alerts.replaceChildren(...banner);
 
@@ -446,7 +457,7 @@ function registerView() {
   hub.addView({
     id: "teams",
     title: "Тимс",
-    subtitle: "Сообщения, каналы, упоминания",
+    subtitle: "Teams, WhatsApp, почта",
     icon: "web/icon.svg",
     badge: count((m) => !done(m)),
     full: true,

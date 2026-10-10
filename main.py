@@ -26,6 +26,7 @@ from core.tools import from_owner  # noqa: E402
 import collect  # noqa: E402
 
 import mcp  # noqa: E402
+import sources  # noqa: E402
 
 # канал плагина — имя без автора: из каталога плагин ставится как «<аккаунт>:teams», страница пишет в «teams»
 NAME = os.environ.get("HUB_EXTENSION", "teams").split(":")[-1]
@@ -231,9 +232,14 @@ def tick(st, items, owner_last, now, put=post):
         keys.add(i["key"])
         fresh.append(i)
     for i in fresh:
+        if str(i.get("box") or "").startswith(("wa:", "mail:")):   # в переписке новое — прежняя карточка устарела
+            for k, (box, _) in list(opened.items()):
+                if box == i["box"]:
+                    put({"kind": "answered", "id": k})
+                    del opened[k]
         done = bool(i.get("box")) and owner_last.get(i["box"], "") > i["at"]   # уже ответил — сразу отвеченным
         put({"kind": "msg", "id": i["key"], "answered": done,
-             **{k: i[k] for k in ("src", "where", "from", "text", "at", "link", "mention")}})
+             **{k: i[k] for k in ("src", "where", "from", "text", "at", "link", "mention", "tier") if k in i}})
         st.setdefault("seen", []).append(i["key"])
         if i.get("box") and not done:
             opened[i["key"]] = [i["box"], i["at"]]
@@ -248,6 +254,41 @@ def tick(st, items, owner_last, now, put=post):
     return fresh
 
 
+def run_sources(st, now, put=post):
+    """Остальные каналы (sources.py), каждый сам по себе: сбой WhatsApp не мешает почте и Teams. Включены те, что есть
+    в sources.json. Возвращает (items, cleared): cleared — переписки, что были открыты и пропали из «ждут вас»."""
+    try:
+        with open(os.path.join(OWN, "sources.json"), encoding="utf-8") as f:
+            cfg = json.load(f)
+    except (OSError, ValueError):
+        return [], set()
+    state = st.setdefault("src", {})
+    items, cleared = [], set()
+    for name, src in sources.SOURCES.items():
+        c = cfg.get(name)
+        s = state.setdefault(name, {"fails": 0, "at": 0, "boxes": []})
+        if not isinstance(c, dict) or time.time() - s["at"] < src["every"]:
+            continue
+        s["at"] = time.time()
+        try:
+            got, boxes, errors = src["fn"](c, now)
+        except Exception as e:   # noqa: BLE001
+            s["fails"] += 1
+            print(f"{iso(now)} {name}: сбой {s['fails']}: {e}", file=sys.stderr, flush=True)
+            if s["fails"] == FAIL_AFTER:
+                put({"kind": "status", "source": name, "ok": False, "error": short(e), "at": iso(now)})
+            continue
+        if s["fails"] >= FAIL_AFTER or errors != s.get("errors"):
+            put({"kind": "status", "source": name, "ok": True, "at": iso(now),
+                 **({"warn": "; ".join(errors)[:160]} if errors else {})})
+        s["fails"], s["errors"] = 0, errors
+        items += got
+        # что было открыто этим каналом и больше не ждёт — отвечено; пока канал не прочитан целиком — не трогаем
+        cleared |= {b for b in s["boxes"] if b not in boxes} if not errors else set()
+        s["boxes"] = sorted(boxes | (set(s["boxes"]) if errors else set()))
+    return items, cleared
+
+
 def main():
     st, reader = load(), Reader()
     choice = Choice(os.path.join(STATE, "journal.jsonl"), st.get("watch"))
@@ -257,30 +298,37 @@ def main():
         last = st.get("last_ok")
         cutoff = iso((datetime.strptime(last, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc) - OVERLAP)
                      if last else now - FIRST_BACK)
+        items, owner_last, teams_ok = [], {}, True
         try:
             st["watch"] = choice.poll()
             items, owner_last = reader.read(st, cutoff, st["watch"], now)
             st["watch_since"] = reader.next_since
         except Exception as e:   # noqa: BLE001 — процесс живёт дальше; сбой — плашкой во вкладке после FAIL_AFTER
+            teams_ok = False
             reader.close()
             st["fails"] = st.get("fails", 0) + 1
             print(f"{iso(now)} teams: сбой {st['fails']}: {e}", file=sys.stderr, flush=True)
             if st["fails"] == FAIL_AFTER:
                 # в канал плагина (его читают все сессии) — первая строка ошибки, без хвоста stderr сервера ms365
                 post({"kind": "status", "ok": False, "error": short(e), "at": iso(now)})
-            save(st)
-            time.sleep(POLL)
-            continue
-        if st.get("fails", 0) >= FAIL_AFTER:
+        extra, cleared = run_sources(st, now)
+        items += extra
+        for box in cleared:
+            owner_last[box] = iso(now)
+        if teams_ok and st.get("fails", 0) >= FAIL_AFTER:
             post({"kind": "status", "ok": True, "at": iso(now)})
-        st["fails"] = 0
+        if teams_ok:
+            st["fails"] = 0
+        prev_ok = st.get("last_ok")
         fresh = tick(st, items, owner_last, now)
-        # доказательство, что чтение идёт: последнее чужое сообщение — при смене и раз в DIR_EVERY (канал хранит
-        # 500 постов, чаще нельзя); страница пишет его вместо «Первое чтение…» (владелец 10.10: «ничего не читает»)
-        if reader.last_in and (reader.last_in != st.get("last_in")
-                               or (last_status := st.get("status_at")) is None
-                               or (now - datetime.strptime(last_status, "%Y-%m-%dT%H:%M:%SZ").replace(
-                                   tzinfo=timezone.utc)).total_seconds() > DIR_EVERY):
+        if not teams_ok:
+            st["last_ok"] = prev_ok   # окно чтения Teams не сдвигаем, пока он не читался
+        elif reader.last_in and (reader.last_in != st.get("last_in")
+                                 or (last_status := st.get("status_at")) is None
+                                 or (now - datetime.strptime(last_status, "%Y-%m-%dT%H:%M:%SZ").replace(
+                                     tzinfo=timezone.utc)).total_seconds() > DIR_EVERY):
+            # доказательство, что чтение идёт: последнее чужое сообщение — при смене и раз в DIR_EVERY (канал хранит
+            # 500 постов); страница пишет его вместо «Первое чтение…» (владелец 10.10: «ничего не читает»)
             post({"kind": "status", "ok": True, "at": iso(now), "last": reader.last_in})
             st["last_in"], st["status_at"] = reader.last_in, iso(now)
         if fresh:
