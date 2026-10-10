@@ -104,9 +104,12 @@ def whatsapp(cfg, now):
         try:
             rows = json.loads(run([cmd, "new", "--channel", ch, "--hours", "24", "--json"]) or "[]")
         except (OSError, ValueError, subprocess.TimeoutExpired) as e:
-            hint = (" — открыта ли вкладка WhatsApp Web в Chrome и включено ли View → Developer → Allow JavaScript "
-                    "from Apple Events") if "no open WhatsApp Web tab" in str(e) else ""
-            errors.append(f"{labels.get(ch, ch)}: {e}{hint}")
+            msg = re.sub(r"^(?:WhatsApp(?: Web)?:\s*)+", "", str(e))
+            if "no open WhatsApp Web tab" in msg and "logged in as" in msg:
+                msg = "в Chrome нет вкладки WhatsApp Web, залогиненной на этот номер"
+            elif "no open WhatsApp Web tab" in msg:
+                msg += " — открыта ли вкладка WhatsApp Web и включено ли View → Developer → Allow JavaScript from Apple Events"
+            errors.append(f"{labels.get(ch, ch)}: {msg}")
             continue
         ok += 1
         for r in rows:
