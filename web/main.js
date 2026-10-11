@@ -9,7 +9,7 @@
 import { stamp } from "/static/js/dom.js";
 
 const AUTHOR = "плагин teams";   // так ядро подписывает посты процесса плагина
-const HUB = "hub";
+const hubName = () => ((hub.snapshot().sessions || []).find((x) => x.kind === "hub") || {}).name || "hub";   // главная сессия называется по-разному (hub, hub-core…)
 const SRC = { dm: "Личка", mention: "Упоминание", channel: "Канал", whatsapp: "WhatsApp", email: "Почта" };
 const SRCS = { dm: "Личка", mention: "Упоминания", channel: "Каналы", whatsapp: "WhatsApp", email: "Почта" };   // в фильтре
 const TEAMS_SRCS = ["dm", "mention", "channel"];   // WhatsApp и почта — вкладки только у включённых каналов (sources.py)
@@ -156,14 +156,14 @@ async function toHub(m, kind) {
     : `Подготовь черновик ответа на сообщение из ${SRC_FROM(m)} (вкладка «Inbox»). Черновик положи под сообщение во `
       + `вкладке: \`hub post teams --reply ${m.post} "<текст черновика>"\` — и спроси меня формой: отправить / поправить / `
       + `не отвечать. Людям в ${SRC_FROM(m)} ничего не отправляй без моего «да».\n\n${ref(m)}`;
-  const r = await hub.post("/api/send", { session: HUB, text });
+  const r = await hub.post("/api/send", { session: hubName(), text });
   if (r.error) { sending.delete(m.id); error = r.error; paint(); return; }
   (kind === "work" ? work : draft).set(m.id, Date.now() / 1000);
   error = "";
   await mark(kind, { id: m.id });
   sending.delete(m.id);
   paint();
-  if (kind === "work") location.hash = `#/s/${encodeURIComponent(HUB)}`;   // владелец 09.10: сразу в диалог с хабом
+  if (kind === "work") location.hash = `#/s/${encodeURIComponent(hubName())}`;   // владелец 09.10: сразу в диалог с хабом
 }
 
 async function hide(ids, on) {
