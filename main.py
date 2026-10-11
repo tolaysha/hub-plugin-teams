@@ -303,6 +303,26 @@ def run_sources(st, now, put=post):
     return items, cleared
 
 
+def backfill_refs(st, reader, now, put=post):
+    """Один раз после обновления: сообщения, запощенные до «Ответить», не знают, куда отвечать. Перечитываем трое суток и
+    дописываем адреса в состояние; странице — пост {"kind": "reply", ids}: на эти сообщения ответить можно."""
+    since = iso(now - timedelta(days=3))
+    me = st["me"]["id"]
+    items = collect.chats(reader.mcp, since, me, {}, top=50)
+    for cid in reader.watched(st.get("watch")):
+        items += collect.channel_posts(reader.mcp, cid, reader.channels[cid], since, me, {})
+    refs = st.setdefault("refs", {})
+    keys = []
+    for i in items:
+        if i.get("ref") and i["key"] in set(st.get("seen") or []):
+            refs[i["key"]] = i["ref"]
+            keys.append(i["key"])
+    for n in range(0, len(keys), 60):
+        put({"kind": "reply", "ids": keys[n:n + 60]})
+    st["refs_v1"] = True
+    return len(keys)
+
+
 def send_replies(st, reader, queue, put=post):
     """Ответы владельца из вкладки («Ответить» и «Отправить» у черновика): его посты {"kind": "send", id, rid, text}.
     rid помним ДО отправки: упало посреди — второй раз не отправим (владелец увидит «не отправлено» и нажмёт сам)."""
@@ -356,6 +376,9 @@ def main():
             st["watch"] = choice.poll()
             items, owner_last = reader.read(st, cutoff, st["watch"], now)
             st["watch_since"] = reader.next_since
+            if not st.get("refs_v1"):
+                print(f"{iso(now)} teams: адреса ответов для {backfill_refs(st, reader, now)} прежних сообщений",
+                      file=sys.stderr, flush=True)
         except Exception as e:   # noqa: BLE001 — процесс живёт дальше; сбой — плашкой во вкладке после FAIL_AFTER
             teams_ok = False
             reader.close()

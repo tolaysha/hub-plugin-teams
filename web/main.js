@@ -26,6 +26,7 @@ const draft = new Map();     // id → ts: черновик запрошен
 const replies = new Map();   // номер поста сообщения → [{by, text, ts}] — черновики от сессий
 const sends = new Map();     // rid → {id, text, ts, state: "wait"|"ok"|"fail", error} — ответы владельца из вкладки
 const composing = new Map(); // id сообщения → {text} — открытое поле ответа (текст переживает перерисовку)
+const replyOk = new Set();   // id сообщений, запощенных до «Ответить»: процесс дописал им адрес ответа (пост reply)
 const WAIT_MAX = 150;        // с: процесс отвечает за пару секунд; дольше — он не запущен
 // пусто: что чтение идёт, а нового нет — со ссылкой на последнее входящее (последний пост status процесса)
 function emptyNote() {
@@ -308,7 +309,7 @@ function composer(m) {
 }
 
 // ответ можно отправить, если процесс знает, куда (reply) и мы туда ещё не ответили
-const canReply = (m) => !!m.reply && !sentOk(m.id) && !answered.has(m.id) && !hidden.has(m.id);
+const canReply = (m) => (!!m.reply || replyOk.has(m.id)) && !sentOk(m.id) && !answered.has(m.id) && !hidden.has(m.id);
 
 function draftBlock(m, r) {
   const d = el("div", "tm-draft");

@@ -199,6 +199,23 @@ class Replies(unittest.TestCase):
         self.assertNotIn("ref", out[0])
         self.assertEqual(st["refs"], {item["key"]: {"chat": "d"}})
 
+    def test_old_messages_get_their_reply_address_once(self):
+        fake = Fake([chat("d", "oneOnOne", "2026-10-09T10:05:00Z")], {"d": [msg("1", "2026-10-09T10:01:00Z", "alex", "привет")]})
+        key = collect.key("d", "1")
+        st, out = {"me": {"id": ME}, "seen": [key, "other"]}, []
+
+        class R:
+            mcp = fake
+            channels = {}
+
+            def watched(self, ids):
+                return []
+        n = main.backfill_refs(st, R(), datetime(2026, 10, 10, tzinfo=timezone.utc), out.append)
+        self.assertEqual(n, 1)
+        self.assertEqual(out, [{"kind": "reply", "ids": [key]}])
+        self.assertEqual(st["refs"], {key: {"chat": "d"}})
+        self.assertTrue(st["refs_v1"])
+
     def test_chat_gets_a_message_and_channel_thread_gets_a_reply(self):
         calls = []
 
