@@ -125,3 +125,11 @@ class MediaSummary(unittest.TestCase):
         from sources import media_summary
         self.assertEqual(media_summary({"ptt": 4, "image": 1}, 5), "4 голосовых, 1 фото")
         self.assertIn("Непрочитанных: 6", media_summary(None, 6))
+
+    def test_digest_is_the_unread_texts(self):
+        from sources import unread_digest
+        msgs = [{"type": "chat", "text": "старое"}, {"type": "e2e_notification", "text": ""},
+                {"type": "chat", "text": "Привет,  когда придёте?"}, {"type": "ptt", "text": ""},
+                {"type": "image", "text": "щиток"}]
+        self.assertEqual(unread_digest(msgs, 3), "Привет, когда придёте? · [голосовое] · щиток")
+        self.assertEqual(unread_digest([], 2), "")

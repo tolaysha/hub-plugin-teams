@@ -97,6 +97,28 @@ KIND_NAMES = {"ptt": ("голосовое", "голосовых"), "audio": ("а
               "chat": ("текст", "текстовых"), "location": ("геопозиция", "геопозиций")}
 
 
+SERVICE_TYPES = {"e2e_notification", "notification_template", "gp2", "protocol", "ciphertext", "revoked"}
+
+
+def unread_digest(messages, n, limit=600):
+    """Резюме непрочитанного: тексты последних n входящих по порядку, медиа без подписи — словом («🎤 голосовое»,
+    «фото»); длинное обрезается с конца. Нет ни текста, ни медиа — пусто (тогда счётчик по типам)."""
+    msgs = [m for m in (messages or []) if m.get("type") not in SERVICE_TYPES][-n:] if n else []
+    parts = []
+    for m in msgs:
+        txt = " ".join((m.get("text") or "").split())
+        if txt:
+            parts.append(txt)
+        else:
+            one = KIND_NAMES.get(m.get("type") or "", (m.get("type") or "", ""))[0]
+            if one and one != "текст":
+                parts.append(f"[{one}]")
+    if not any(not p.startswith("[") for p in parts) and not parts:
+        return ""
+    out = " · ".join(parts)
+    return out if len(out) <= limit else "…" + out[-(limit - 1):]
+
+
 def media_summary(kinds, n):
     """Что пришло, когда у последнего нет текста: «4 голосовых, 2 фото» вместо счётчика (11.10, Иван: «мне надо не
     число, а про что он писал»). Без типов от `wa` — число и общие слова. Содержимое без открытия чата недоступно."""
@@ -132,7 +154,10 @@ def whatsapp(cfg, now):
             n = r.get("unread") or 0
             if not cid or not n:
                 continue   # всё прочитано или отвечено — внимания не требует
-            if not text:   # последнее — медиа/голосовое: текста нет, но непрочитанное ждёт
+            digest = unread_digest(r.get("messages"), n)   # о чём писали — тексты непрочитанных, не счётчик
+            if digest:
+                text = digest
+            elif not text:   # последнее — медиа/голосовое: текста нет, но непрочитанное ждёт
                 text = media_summary(r.get("kinds"), n)
             group = cid.endswith("@g.us")
             t = tier(text)
