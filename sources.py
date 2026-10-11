@@ -92,6 +92,21 @@ def expand(p):
     return os.path.expanduser(p)
 
 
+KIND_NAMES = {"ptt": ("голосовое", "голосовых"), "audio": ("аудио", "аудио"), "image": ("фото", "фото"),
+              "video": ("видео", "видео"), "document": ("файл", "файлов"), "sticker": ("стикер", "стикеров"),
+              "chat": ("текст", "текстовых"), "location": ("геопозиция", "геопозиций")}
+
+
+def media_summary(kinds, n):
+    """Что пришло, когда у последнего нет текста: «4 голосовых, 2 фото» вместо счётчика (11.10, Иван: «мне надо не
+    число, а про что он писал»). Без типов от `wa` — число и общие слова. Содержимое без открытия чата недоступно."""
+    parts = []
+    for k, c in sorted((kinds or {}).items(), key=lambda kv: -kv[1]):
+        one, many = KIND_NAMES.get(k, (k, k))
+        parts.append(f"{c} {one if c == 1 else many}")
+    return ", ".join(parts) if parts else f"Непрочитанных: {n} (фото, голосовое или файл)"
+
+
 # --- WhatsApp: `wa new` — читает только список чатов открытой вкладки, ничего не открывает и не отмечает прочитанным ---
 @source("whatsapp", every=120)
 def whatsapp(cfg, now):
@@ -118,7 +133,7 @@ def whatsapp(cfg, now):
             if not cid or not n:
                 continue   # всё прочитано или отвечено — внимания не требует
             if not text:   # последнее — медиа/голосовое: текста нет, но непрочитанное ждёт
-                text = f"Непрочитанных: {n} (фото, голосовое или файл)"
+                text = media_summary(r.get("kinds"), n)
             group = cid.endswith("@g.us")
             t = tier(text)
             if t == "C" or (group and t != "A"):

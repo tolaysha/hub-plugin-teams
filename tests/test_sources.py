@@ -118,3 +118,10 @@ class Flow(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MediaSummary(unittest.TestCase):
+    def test_kinds_replace_the_bare_counter(self):
+        from sources import media_summary
+        self.assertEqual(media_summary({"ptt": 4, "image": 1}, 5), "4 голосовых, 1 фото")
+        self.assertIn("Непрочитанных: 6", media_summary(None, 6))
