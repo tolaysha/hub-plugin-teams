@@ -92,7 +92,8 @@ def chats(mcp, cutoff, me, owner_last, top=30):
             out.append({"key": key(c["id"], m["id"]), "box": box, "src": "dm" if dm else "mention",
                         "where": "Личка" if dm else (c.get("topic") or "Групповой чат"),
                         "from": sender(m).get("displayName") or "", "text": text, "at": m["createdDateTime"],
-                        "link": m.get("webUrl") or c.get("webUrl") or "", "mention": mention})
+                        "link": m.get("webUrl") or c.get("webUrl") or "", "mention": mention,
+                        "ref": {"chat": c["id"]}})   # ref — куда отвечать (в посте не уходит; main.py хранит в состоянии)
     return out
 
 
@@ -132,7 +133,8 @@ def channel_posts(mcp, channel, info, cutoff, me, owner_last, top=10):
             out.append({"key": key(channel, m["id"]), "box": box, "src": "channel" if m is root else "mention",
                         "where": label + (f" · {thread}" if m is not root else ""),
                         "from": sender(m).get("displayName") or "", "text": text, "at": m["createdDateTime"],
-                        "link": m.get("webUrl") or "", "mention": mention})
+                        "link": m.get("webUrl") or "", "mention": mention,
+                        "ref": {"team": team, "channel": channel, "root": root["id"]}})
     return out
 
 
@@ -160,6 +162,23 @@ def channel_mentions(mcp, cutoff, me_mail, name, channels=None, skip=(), size=25
                         "from": mail.get("name") or "", "text": summary, "at": r["createdDateTime"],
                         "link": r.get("webLink") or "", "mention": True})
     return out
+
+
+def html_body(text):
+    """Текст ответа → тело сообщения Teams: обычный текст Graph портит, поэтому html с экранированием."""
+    return {"body": {"contentType": "html",
+                     "content": "<p>" + html.escape(text.strip()).replace("\n", "<br>") + "</p>"}}
+
+
+def reply(mcp, ref, text):
+    """Ответ владельца в ту же переписку: чат — новым сообщением в чат, канал — ответом в тред (root)."""
+    body = html_body(text)
+    if ref.get("chat"):
+        return mcp.call("send-chat-message", {"chatId": ref["chat"], "body": body}, empty_ok=True)
+    if ref.get("team") and ref.get("channel") and ref.get("root"):
+        return mcp.call("reply-to-channel-message", {"teamId": ref["team"], "channelId": ref["channel"],
+                                                     "chatMessageId": ref["root"], "body": body}, empty_ok=True)
+    raise OSError("не знаю, куда отвечать на это сообщение")
 
 
 def latest_incoming(mcp, me, top=30):

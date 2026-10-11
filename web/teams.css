@@ -71,3 +71,25 @@
 .tm-sus { padding: 1px var(--space-2); border-radius: var(--radius-xs); font-size: var(--text-xs); font-weight: 600;
   background: color-mix(in oklch, var(--destructive) 14%, var(--card)); color: var(--destructive); cursor: help; }
 .tm-card.tm-card-sus { border-color: color-mix(in oklch, var(--destructive) 45%, var(--border)); }
+
+/* Переписка с человеком одним блоком: заголовок один раз, сообщения подряд, дата — разделителем при перерыве */
+.tm-thread { gap: var(--space-2); }
+.tm-line { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-1); }
+.tm-line.tm-done .tm-text { color: var(--muted-foreground); }
+.tm-divider { display: flex; align-items: center; gap: var(--space-3); margin-top: var(--space-2); color: var(--muted-foreground);
+  font-size: var(--text-sm); }
+.tm-divider::before, .tm-divider::after { content: ""; flex: 1; border-top: 1px solid var(--border); }
+.tm-compose { display: flex; flex-direction: column; gap: var(--space-2); }
+.tm-compose-ta { width: 100%; box-sizing: border-box; min-height: 72px; padding: var(--space-2) var(--space-3); resize: vertical;
+  border: 1px solid var(--input); border-radius: var(--radius); background: var(--background); color: var(--foreground);
+  font: inherit; line-height: 1.5; }
+.tm-compose-ta:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+.tm-hint { flex-basis: 100%; color: var(--muted-foreground); font-size: var(--text-sm); }
+.tm-mine { padding: var(--space-2) var(--space-3); border-radius: var(--radius);
+  background: color-mix(in oklch, var(--primary) 8%, var(--card)); }
+.tm-mine-fail .tm-draft-by { color: var(--destructive); }
+.tm-bar > div, .tm-bar .seg { max-width: 100%; }
+.tm-bar .seg { overflow-x: auto; }   /* на телефоне фильтры не раздвигают страницу — прокручиваются сами */
+.tm, .tm-top, .tm-list { min-width: 0; }   /* .tm — элемент grid вида: без этого на телефоне шире экрана */
+.tm-card { max-width: 100%; box-sizing: border-box; }
+.tm-draft .tm-acts, .tm-mine .tm-acts { margin-top: var(--space-2); }

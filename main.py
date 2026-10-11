@@ -91,6 +91,7 @@ class Choice:
     def __init__(self, path, ids=None):
         self.path, self.offset, self.ino, self.ids, self.before = path, 0, None, ids, ids
         self.recent = []   # [(seq, ids)] — последние принятые на вид посты: ядро может отклонить следом
+        self.sends = []    # ответы владельца из вкладки: {"id", "rid", "text"} — ждут отправки (take_sends)
 
     def poll(self):
         try:
@@ -119,7 +120,7 @@ class Choice:
                 self.recent = [r for r in self.recent if r[0] != of]
                 self.ids = self.recent[-1][1] if self.recent else self.before
             return
-        if b"ext.post" not in line or b"watch" not in line:
+        if b"ext.post" not in line or (b"watch" not in line and b'\\"send\\"' not in line):
             return
         try:
             ev = json.loads(line)
@@ -129,11 +130,19 @@ class Choice:
             return
         if ev.get("type") != "ext.post" or d.get("plugin") != NAME or not from_owner(d):
             return
-        if isinstance(body, dict) and body.get("kind") == "watch" and isinstance(body.get("ids"), list):
+        if isinstance(body, dict) and body.get("kind") == "send":   # только слово владельца: сессии так не отправят
+            if all(isinstance(body.get(k), str) and body[k] for k in ("id", "rid", "text")):
+                self.sends.append({k: body[k] for k in ("id", "rid", "text")})
+        elif isinstance(body, dict) and body.get("kind") == "watch" and isinstance(body.get("ids"), list):
             if not self.recent:
                 self.before = self.ids
             self.recent = (self.recent + [(ev.get("seq"), [str(x) for x in body["ids"]][:500])])[-20:]
             self.ids = self.recent[-1][1]
+
+
+    def take_sends(self):
+        out, self.sends = self.sends, []
+        return out
 
 
 def channel_key(cid):
@@ -238,8 +247,10 @@ def tick(st, items, owner_last, now, put=post):
                     put({"kind": "answered", "id": k})
                     del opened[k]
         done = bool(i.get("box")) and owner_last.get(i["box"], "") > i["at"]   # уже ответил — сразу отвеченным
-        put({"kind": "msg", "id": i["key"], "answered": done,
+        put({"kind": "msg", "id": i["key"], "answered": done, **({"reply": True} if i.get("ref") else {}),
              **{k: i[k] for k in ("src", "where", "from", "text", "at", "link", "mention", "tier") if k in i}})
+        if i.get("ref"):   # куда ответить владелец сможет из вкладки; в пост это не идёт
+            st.setdefault("refs", {})[i["key"]] = i["ref"]
         st.setdefault("seen", []).append(i["key"])
         if i.get("box") and not done:
             opened[i["key"]] = [i["box"], i["at"]]
@@ -248,6 +259,9 @@ def tick(st, items, owner_last, now, put=post):
             put({"kind": "answered", "id": k})
             del opened[k]
     st["seen"] = st.get("seen", [])[-SEEN_MAX:]
+    refs = st.get("refs") or {}
+    while len(refs) > SEEN_MAX:
+        del refs[next(iter(refs))]
     while len(opened) > OPEN_MAX:   # самые старые — первыми (порядок вставки)
         del opened[next(iter(opened))]
     st["last_ok"] = iso(now)
@@ -287,6 +301,45 @@ def run_sources(st, now, put=post):
         cleared |= {b for b in s["boxes"] if b not in boxes} if not errors else set()
         s["boxes"] = sorted(boxes | (set(s["boxes"]) if errors else set()))
     return items, cleared
+
+
+def send_replies(st, reader, queue, put=post):
+    """Ответы владельца из вкладки («Ответить» и «Отправить» у черновика): его посты {"kind": "send", id, rid, text}.
+    rid помним ДО отправки: упало посреди — второй раз не отправим (владелец увидит «не отправлено» и нажмёт сам)."""
+    done = st.setdefault("sent_rids", [])
+    for q in queue:
+        if q["rid"] in done:
+            continue
+        done.append(q["rid"])
+        del done[:-500]
+        save(st)
+        ref = (st.get("refs") or {}).get(q["id"])
+        try:
+            if not ref:
+                raise OSError("отсюда ответить нельзя: не знаю, куда")
+            if not reader.mcp:
+                reader.connect(st)
+            collect.reply(reader.mcp, ref, q["text"][:POST_MAX])
+        except Exception as e:   # noqa: BLE001
+            reader.close()
+            put({"kind": "send_failed", "id": q["id"], "rid": q["rid"], "error": short(e)})
+            print(f"teams: ответ {q['rid']} не ушёл: {e}", file=sys.stderr, flush=True)
+            continue
+        put({"kind": "sent", "id": q["id"], "rid": q["rid"], "at": iso(datetime.now(timezone.utc))})
+        put({"kind": "answered", "id": q["id"]})
+        (st.get("open") or {}).pop(q["id"], None)
+        save(st)
+
+
+def pause(st, reader, choice, seconds):
+    """Ждём следующий опрос, но ответы владельца из вкладки отправляем сразу, не раз в минуту."""
+    end = time.time() + seconds
+    while time.time() < end:
+        choice.poll()
+        queue = choice.take_sends()
+        if queue:
+            send_replies(st, reader, queue)
+        time.sleep(min(2, max(0, end - time.time())))
 
 
 def main():
@@ -334,7 +387,8 @@ def main():
         if fresh:
             print(f"{iso(now)} teams: новых {len(fresh)}", file=sys.stderr, flush=True)
         save(st)
-        time.sleep(POLL)
+        send_replies(st, reader, choice.take_sends())
+        pause(st, reader, choice, POLL)
 
 
 if __name__ == "__main__":

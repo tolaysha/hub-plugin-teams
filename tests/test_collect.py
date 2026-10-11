@@ -28,7 +28,7 @@ class Fake:
     def __init__(self, chats=(), chat_msgs=None, channel=(), hits=()):
         self.chats, self.chat_msgs, self.channel, self.hits = list(chats), chat_msgs or {}, list(channel), list(hits)
 
-    def call(self, tool, args):
+    def call(self, tool, args, empty_ok=False):
         if tool == "list-chats":
             return {"value": self.chats}
         if tool == "list-chat-messages":
@@ -184,6 +184,75 @@ class Channels(unittest.TestCase):
             f.write("{}\n")
         self.assertEqual(main.Choice(f.name, ["saved"]).poll(), ["saved"])
         os.unlink(f.name)
+
+
+class Replies(unittest.TestCase):
+    """Ответ владельца из вкладки: куда уходит и что можно отправить."""
+
+    def test_items_carry_where_to_answer_but_posts_only_the_flag(self):
+        fake = Fake([chat("d", "oneOnOne", "2026-10-09T10:05:00Z")], {"d": [msg("1", "2026-10-09T10:01:00Z", "alex", "привет")]})
+        item = collect.chats(fake, CUT, ME, {})[0]
+        self.assertEqual(item["ref"], {"chat": "d"})
+        st, out = {}, []
+        main.tick(st, [item], {}, datetime(2026, 10, 9, 11, tzinfo=timezone.utc), out.append)
+        self.assertTrue(out[0]["reply"])
+        self.assertNotIn("ref", out[0])
+        self.assertEqual(st["refs"], {item["key"]: {"chat": "d"}})
+
+    def test_chat_gets_a_message_and_channel_thread_gets_a_reply(self):
+        calls = []
+
+        class M:
+            def call(self, tool, args, empty_ok=False):
+                calls.append((tool, args))
+                return {}
+        collect.reply(M(), {"chat": "c1"}, "Привет\n<b>& да")
+        collect.reply(M(), {"team": "t", "channel": "ch", "root": "r"}, "ок")
+        self.assertEqual(calls[0][0], "send-chat-message")
+        self.assertEqual(calls[0][1]["chatId"], "c1")
+        self.assertEqual(calls[0][1]["body"]["body"], {"contentType": "html", "content": "<p>Привет<br>&lt;b&gt;&amp; да</p>"})
+        self.assertEqual(calls[1][0], "reply-to-channel-message")
+        self.assertEqual((calls[1][1]["teamId"], calls[1][1]["channelId"], calls[1][1]["chatMessageId"]), ("t", "ch", "r"))
+        with self.assertRaises(OSError):
+            collect.reply(M(), {}, "x")
+
+    def test_only_owner_send_posts_are_taken_and_each_is_sent_once(self):
+        import json
+        import tempfile
+
+        def ev(body, **data):
+            return json.dumps({"seq": 1, "type": "ext.post", "data": {"plugin": "teams", "text": json.dumps(body), **data}})
+        send = {"kind": "send", "id": "k1", "rid": "r1", "text": "Привет"}
+        with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as f:
+            f.write(ev(send, owner=True, channel="web") + "\n")
+            f.write(ev({**send, "rid": "r2"}, channel="session", sender="hub-core") + "\n")   # сессия — не владелец
+            f.write(ev({**send, "rid": "r3"}, owner=True, channel="plugin", sender="x") + "\n")
+        c = main.Choice(f.name)
+        c.poll()
+        queue = c.take_sends()
+        self.assertEqual([q["rid"] for q in queue], ["r1"])
+        self.assertEqual(c.take_sends(), [])
+        os.unlink(f.name)
+
+        sent, out, st = [], [], {"refs": {"k1": {"chat": "c1"}}, "open": {"k1": ["b", "t"]}}
+
+        class R:
+            mcp = object()
+
+            def close(self):
+                pass
+        real_reply, real_save = collect.reply, main.save
+        collect.reply = lambda mcp, ref, text: sent.append((ref, text))
+        main.save = lambda st: None
+        try:
+            main.send_replies(st, R(), queue, out.append)
+            main.send_replies(st, R(), queue, out.append)   # тот же rid — второй раз не уходит
+            main.send_replies(st, R(), [{"id": "нет", "rid": "r9", "text": "x"}], out.append)
+        finally:
+            collect.reply, main.save = real_reply, real_save
+        self.assertEqual(sent, [({"chat": "c1"}, "Привет")])
+        self.assertEqual([(p["kind"], p["id"]) for p in out], [("sent", "k1"), ("answered", "k1"), ("send_failed", "нет")])
+        self.assertEqual(st["open"], {})
 
 
 class Safety(unittest.TestCase):
