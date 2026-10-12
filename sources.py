@@ -462,7 +462,7 @@ def email(cfg, now):
                           "tier": t, "where": "Почта" + (f" · {acct}" if len(cfg.get("accounts") or []) > 1 else ""),
                           "from": name or "—", "text": (subject or "(без темы)") + (f"\n\n{body}" if body else ""),
                           "at": at, **({"links": links} if links else {}),
-                          "link": f"https://mail.google.com/mail/u/{acct}/#inbox/{th['id']}", "mention": False,
+                          "link": f"https://mail.google.com/mail/u/0/?authuser={acct}#inbox/{th['id']}", "mention": False,
                           "contact": f"mail:{(addr.group(1) if addr else sender).lower()}",
                           "ref": {"mail": acct, "thread": th["id"], "subject": subject, "cmd": cmd}})
     if errors and not ok:
