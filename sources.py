@@ -207,6 +207,51 @@ def whatsapp(cfg, now):
     return items, boxes, errors
 
 
+# --- Telegram: личный аккаунт, только чтение (`tgnew new` — копия сессии Telethon, прочитанным ничего не отмечает) --
+@source("telegram", every=120)
+def telegram(cfg, now):
+    """Чаты с непрочитанным входящим за сутки; та же логика, что у WhatsApp. Группы — только срочное; заглушённые,
+    каналы-рассылки и боты командой не отдаются. Ответ — `send tg` (ночной запрет и выходные действуют там)."""
+    cmd = expand(cfg.get("cmd") or "~/.claude/bin/tgnew")
+    try:
+        rows = json.loads(run([cmd, "new", "--hours", "24", "--json"]) or "[]")
+    except (OSError, ValueError, subprocess.TimeoutExpired) as e:
+        raise OSError(f"Telegram: {e}")
+    items, boxes = [], set()
+    for r in rows:
+        cid, n = r.get("chat_id") or "", r.get("unread") or 0
+        if not cid or not n:
+            continue
+        wait = waiting(r)
+        if r.get("messages") and not wait:
+            continue
+        text = unread_digest(wait, len(wait), preview=r.get("preview") or "")
+        if not text:
+            kinds = {}
+            for m in wait:
+                kinds[m.get("type") or ""] = kinds.get(m.get("type") or "", 0) + 1
+            text = (r.get("preview") or "").strip() or media_summary(kinds, len(wait) or n)
+        group = bool(r.get("group"))
+        if group and wait:   # в группе — кто написал
+            last = wait[-1]
+            if last.get("from"):
+                text = f"{last['from']}: {text}" if " · " not in text else text
+        t = tier(text)
+        if t == "C" or (group and t != "A"):
+            continue
+        at = datetime.fromisoformat(r["last"]) if r.get("last") else now
+        box = f"tg:{cid}"
+        boxes.add(box)
+        mark = (wait[-1].get("id") if wait else "") or r.get("last")
+        user = r.get("username") or ""
+        items.append({"key": f"{box}:{mark}", "box": box, "src": "telegram", "tier": t,
+                      "where": "Telegram" + (" · группа" if group else ""), "from": r.get("name") or cid,
+                      "text": text[:1200], "at": iso_utc(at), "mention": False,
+                      "link": f"https://t.me/{user}" if user else (f"tg://user?id={cid}" if not group else ""),
+                      "ref": {"tg": cid, "cmd": cmd, "send": expand(cfg.get("send") or "~/.claude/bin/send")}})
+    return items, boxes, []
+
+
 # --- Почта: Gmail через gogx — непрочитанные входящие вне рассылок; тема и отправитель ----------------------------
 @source("email", every=120)
 def email(cfg, now):
@@ -254,6 +299,8 @@ def reply(ref, text):
     вернётся ошибкой во вкладку); почта — ответом всем в ту же цепочку."""
     if ref.get("wa"):
         return run([ref["send"], "wa", "--to", ref["to"], "--channel", ref["wa"], "--text", text], timeout=180)
+    if ref.get("tg"):
+        return run([ref["send"], "tg", "--to", ref["tg"], "--text", text], timeout=120)
     if ref.get("mail"):
         subject = ref.get("subject") or ""
         if not re.match(r"(?i)re:", subject):
@@ -292,6 +339,15 @@ def history(ref, top=20):
             if text:
                 out.append({"at": at, "from": m.get("author") or "", "me": bool(m.get("out")), "text": text})
         return out
+    if ref.get("tg"):
+        try:
+            data = json.loads(run([ref.get("cmd") or expand("~/.claude/bin/tgnew"), "thread", ref["tg"], "--limit",
+                                   str(top), "--json"]))
+        except (OSError, ValueError):
+            return []
+        return [{"at": iso_utc(datetime.fromtimestamp(m["t"], timezone.utc)), "from": m.get("from") or "",
+                 "me": bool(m.get("out")), "text": m.get("text") or f"[{KIND_NAMES.get(m.get('type'), ('медиа',))[0]}]"}
+                for m in data.get("messages") or []]
     if ref.get("mail"):
         data = json.loads(run([ref["cmd"], "gmail", "thread", "get", ref["thread"], "-a", ref["mail"], "-j"]))
         out = []

@@ -10,10 +10,10 @@ import { stamp } from "/static/js/dom.js";
 
 const AUTHOR = "плагин teams";   // так ядро подписывает посты процесса плагина
 const hubName = () => ((hub.snapshot().sessions || []).find((x) => x.kind === "hub") || {}).name || "hub";   // главная сессия называется по-разному (hub, hub-core…)
-const SRC = { dm: "Личка", mention: "Упоминание", channel: "Канал", whatsapp: "WhatsApp", email: "Почта" };
-const SRCS = { dm: "Личка", mention: "Упоминания", channel: "Каналы", whatsapp: "WhatsApp", email: "Почта" };   // в фильтре
+const SRC = { dm: "Личка", mention: "Упоминание", channel: "Канал", whatsapp: "WhatsApp", telegram: "Telegram", email: "Почта" };
+const SRCS = { dm: "Личка", mention: "Упоминания", channel: "Каналы", whatsapp: "WhatsApp", telegram: "Telegram", email: "Почта" };   // в фильтре
 const TEAMS_SRCS = ["dm", "mention", "channel"];   // WhatsApp и почта — вкладки только у включённых каналов (sources.py)
-const NAMES = { teams: "Teams", whatsapp: "WhatsApp", email: "Почта" };   // чьё чтение: пост status с полем source
+const NAMES = { teams: "Teams", whatsapp: "WhatsApp", telegram: "Telegram", email: "Почта" };   // чьё чтение: пост status с полем source
 const statuses = new Map();   // источник → последний status процесса
 let hub = null;
 const el = (...a) => hub.el(...a);
@@ -121,7 +121,7 @@ const count = (pred) => [...msgs.values()].filter(pred).length;
 function safeLink(url) {
   try {
     const u = new URL(url);
-    return u.protocol === "https:" && /(^|\.)(microsoft\.com|office\.com|live\.com|skype\.com|wa\.me|whatsapp\.com|mail\.google\.com)$/.test(u.hostname) ? u.href : "";
+    return u.protocol === "https:" && /(^|\.)(microsoft\.com|office\.com|live\.com|skype\.com|wa\.me|whatsapp\.com|t\.me|telegram\.org|mail\.google\.com)$/.test(u.hostname) ? u.href : "";
   } catch { return ""; }
 }
 
@@ -397,7 +397,7 @@ function thread(ms) {   // ms — по возрастанию времени
     acts.append(button("Вернуть", "quiet", () => hide(ms.map((m) => m.id), false), `Вернуть сообщения ${last.from}`));
   }
   if (safeLink(last.link)) {
-    const a = el("a", "tm-link", last.src === "whatsapp" ? "Открыть в WhatsApp ↗" : last.src === "email" ? "Открыть письмо ↗" : "Открыть в Teams ↗");
+    const a = el("a", "tm-link", last.src === "whatsapp" ? "Открыть в WhatsApp ↗" : last.src === "telegram" ? "Открыть в Telegram ↗" : last.src === "email" ? "Открыть письмо ↗" : "Открыть в Teams ↗");
     a.href = safeLink(last.link);
     a.target = "_blank";
     a.rel = "noopener";

@@ -406,7 +406,7 @@ def due(at, now=None):
 def deliver(st, reader, ref, text=None, emoji=None):
     if not ref:
         raise OSError("отсюда ответить нельзя: не знаю, куда")
-    if ref.get("wa") or ref.get("mail"):
+    if ref.get("wa") or ref.get("mail") or ref.get("tg"):
         return sources.react(ref, emoji) if emoji else sources.reply(ref, text)
     if not reader.mcp:
         reader.connect(st)
@@ -461,7 +461,7 @@ def history(st, reader, q, put=post, now=None):
     for k in [k for k, t in seen.items() if now - t > 86400]:
         del seen[k]
     try:
-        if ref.get("wa") or ref.get("mail"):
+        if ref.get("wa") or ref.get("mail") or ref.get("tg"):
             items = sources.history(ref)
         else:
             if not reader.mcp:

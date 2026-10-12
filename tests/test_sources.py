@@ -98,6 +98,37 @@ class WhatsApp(unittest.TestCase):
             sources.whatsapp({"channels": ["a", "b"]}, NOW)
 
 
+class Telegram(unittest.TestCase):
+    def setUp(self):
+        self._run = sources.run
+
+    def tearDown(self):
+        sources.run = self._run
+
+    def test_personal_chat_card_groups_quiet_and_reply_goes_through_send(self):
+        sources.run = fake_run({"new": [
+            {"chat_id": "3123499", "name": "Лена", "unread": 2, "group": False, "last": "2026-10-10T11:30-03:00",
+             "preview": "Пришлёшь договор?", "out_last_t": 0,
+             "messages": [{"id": "10", "text": "Привет", "type": "chat", "out": False, "t": 1},
+                          {"id": "11", "text": "Пришлёшь договор?", "type": "chat", "out": False, "t": 2}]},
+            {"chat_id": "-100500", "name": "Соседи", "unread": 3, "group": True, "last": "2026-10-10T10:00-03:00",
+             "preview": "Кто идёт?", "out_last_t": 0,
+             "messages": [{"id": "5", "text": "Кто идёт?", "type": "chat", "out": False, "t": 1, "from": "Ира"}]},
+            {"chat_id": "77", "name": "Вася", "unread": 1, "group": False, "last": "2026-10-10T10:00-03:00",
+             "preview": "спасибо", "out_last_t": 0,
+             "messages": [{"id": "9", "text": "спасибо", "type": "chat", "out": False, "t": 1}]},
+        ]})
+        items, boxes, errors = sources.telegram({}, NOW)
+        self.assertEqual([i["from"] for i in items], ["Лена"])   # группа без срочного и «спасибо» — нет
+        self.assertEqual(items[0]["src"], "telegram")
+        self.assertEqual(items[0]["text"], "Привет · Пришлёшь договор?")
+        self.assertEqual(boxes, {"tg:3123499"})
+        calls = []
+        sources.run = lambda cmd, timeout=0: calls.append(cmd) or ""
+        sources.reply(items[0]["ref"], "Да, вечером")
+        self.assertEqual(calls[0][1:], ["tg", "--to", "3123499", "--text", "Да, вечером"])
+
+
 class Email(unittest.TestCase):
     def setUp(self):
         self._run = sources.run

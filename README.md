@@ -1,4 +1,4 @@
-# Inbox (Teams, WhatsApp, почта) — плагин Agents Hub
+# Inbox (Teams, WhatsApp, Telegram, почта) — плагин Agents Hub
 
 Вкладка на странице хаба: новые сообщения Microsoft Teams в одном списке.
 
@@ -71,3 +71,10 @@ Teams — сообщение само уходит в «Разобранные»
 PYTHONPATH=<папка хаба> python3.12 -m unittest discover -s tests
 node tests/suspicious.test.mjs web/main.js
 ```
+
+## Telegram
+
+Источник `telegram` включается ключом `"telegram": {}` в `sources.json`. Читает личный аккаунт командой
+`~/.claude/bin/tgnew new --json` (только чтение: копия сессии Telethon, прочитанным ничего не отмечается; заглушённые
+чаты, каналы-рассылки и боты пропускаются; группы — только срочное). Ответ — `send tg --to <чат>`: ночной запрет
+(23:00–08:00) и правила выходных действуют в самой команде. История — `tgnew thread <чат>`.
