@@ -61,6 +61,26 @@ class WhatsApp(unittest.TestCase):
         self.assertEqual(boxes, {"wa:whatsapp:5491100000001@c.us"})
         self.assertEqual(errors, [])
 
+    def test_card_is_the_text_of_new_messages_after_owner_reply_only(self):
+        """12.10: в карточке был счётчик («4 текстовых»), а после ответа владельца поднималось уже отвеченное."""
+        def m(mid, t, text="", cached=True, kind="chat"):
+            return {"id": mid, "t": t, "type": kind, "text": text, "cached": cached}
+        chat = {"chat_id": "5491100000005@c.us", "name": "Мастер", "new": 4, "unread": 3, "last": "2026-10-10T11:36-03:00",
+                "out_last_t": 150, "preview": "Hoy nos vemos como siempre?", "kinds": {"chat": 4},
+                "messages": [m("a", 100, "Buen día!"), m("b", 200, "Llego a las 16"), m("c", 300, cached=False),
+                             m("s", 310, kind="notification_template"), m("d", 400, cached=False)]}
+        sources.run = fake_run({"new": [chat]})
+        items, _, _ = sources.whatsapp({"channels": ["whatsapp"]}, NOW)
+        self.assertEqual(items[0]["text"], "[ещё 1 без текста] · Llego a las 16 · Hoy nos vemos como siempre?")
+        self.assertNotIn("Buen día", items[0]["text"])            # на это он уже ответил
+        self.assertTrue(items[0]["key"].endswith(":d"))           # ключ — последнее ждущее сообщение
+        sources.run = fake_run({"new": [{**chat, "last": "2026-10-10T11:40-03:00", "messages": chat["messages"] + [
+            m("s2", 500, kind="gp2")]}]})
+        again, _, _ = sources.whatsapp({"channels": ["whatsapp"]}, NOW)
+        self.assertEqual(again[0]["key"], items[0]["key"])        # служебное событие второй карточкой не станет
+        sources.run = fake_run({"new": [{**chat, "out_last_t": 450}]})
+        self.assertEqual(sources.whatsapp({"channels": ["whatsapp"]}, NOW)[0], [])   # ответил после всех — не поднимаем
+
     def test_unread_media_without_text_still_shows(self):
         sources.run = fake_run({"new": [
             {"chat_id": "5491100000004@c.us", "name": "Электрик", "new": 3, "unread": 1,

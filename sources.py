@@ -100,21 +100,40 @@ KIND_NAMES = {"ptt": ("голосовое", "голосовых"), "audio": ("а
 SERVICE_TYPES = {"e2e_notification", "notification_template", "gp2", "protocol", "ciphertext", "revoked"}
 
 
-def unread_digest(messages, n, limit=600):
-    """Резюме непрочитанного: тексты последних n входящих по порядку, медиа без подписи — словом («🎤 голосовое»,
-    «фото»); длинное обрезается с конца. Нет ни текста, ни медиа — пусто (тогда счётчик по типам)."""
+def waiting(r):
+    """Сообщения чата, которые ждут владельца: непрочитанные входящие ПОСЛЕ его последнего ответа (то, на что он уже
+    ответил, заново не поднимаем), без служебных. Времени нет (старая команда wa) — последние по счётчику."""
+    n = r.get("unread") or 0
+    msgs = [m for m in (r.get("messages") or []) if m.get("type") not in SERVICE_TYPES]
+    after = r.get("out_last_t") or 0
+    if after:
+        msgs = [m for m in msgs if (m.get("t") or after + 1) > after]
+    return msgs[-n:] if n else []
+
+
+def unread_digest(messages, n, limit=600, preview=""):
+    """Резюме непрочитанного: тексты последних n входящих по порядку, медиа без подписи — словом («голосовое»,
+    «фото»). Текст есть только у сообщений из сохранённой копии треда; у самого свежего без копии — строка из
+    списка чатов (preview); у остальных без текста — честное «[ещё N без текста]», чат ради них не открываем.
+    Длинное обрезается с конца. Ничего не известно — пусто."""
     msgs = [m for m in (messages or []) if m.get("type") not in SERVICE_TYPES][-n:] if n else []
-    parts = []
-    for m in msgs:
+    parts, blind = [], 0
+    for i, m in enumerate(msgs):
         txt = " ".join((m.get("text") or "").split())
+        if not txt and i == len(msgs) - 1 and not m.get("cached"):
+            txt = " ".join((preview or "").split())
         if txt:
             parts.append(txt)
+            continue
+        one = KIND_NAMES.get(m.get("type") or "", (m.get("type") or "", ""))[0]
+        if one and one != "текст":
+            parts.append(f"[{one}]")
         else:
-            one = KIND_NAMES.get(m.get("type") or "", (m.get("type") or "", ""))[0]
-            if one and one != "текст":
-                parts.append(f"[{one}]")
-    if not any(not p.startswith("[") for p in parts) and not parts:
+            blind += 1
+    if not parts:
         return ""
+    if blind:
+        parts.insert(0, f"[ещё {blind} без текста]")
     out = " · ".join(parts)
     return out if len(out) <= limit else "…" + out[-(limit - 1):]
 
@@ -154,11 +173,17 @@ def whatsapp(cfg, now):
             n = r.get("unread") or 0
             if not cid or not n:
                 continue   # всё прочитано или отвечено — внимания не требует
-            digest = unread_digest(r.get("messages"), n)   # о чём писали — тексты непрочитанных, не счётчик
+            wait = waiting(r)
+            if r.get("messages") and not wait:
+                continue   # после его ответа нового нет (или только служебное) — отвеченное не поднимаем
+            digest = unread_digest(wait, len(wait), preview=text)   # о чём писали — тексты, не счётчик
             if digest:
                 text = digest
-            elif not text:   # последнее — медиа/голосовое: текста нет, но непрочитанное ждёт
-                text = media_summary(r.get("kinds"), n)
+            elif not text:   # текста нет ни в копии, ни в списке чатов: что пришло — словами
+                kinds = {}
+                for m in wait:
+                    kinds[m.get("type") or ""] = kinds.get(m.get("type") or "", 0) + 1
+                text = media_summary(kinds or r.get("kinds"), len(wait) or n)
             group = cid.endswith("@g.us")
             t = tier(text)
             if t == "C" or (group and t != "A"):
@@ -167,7 +192,9 @@ def whatsapp(cfg, now):
             box = f"wa:{ch}:{cid}"
             digits = re.sub(r"\D", "", cid.split("@")[0])
             boxes.add(box)
-            items.append({"key": f"{box}:{r.get('last')}", "box": box, "src": "whatsapp", "tier": t,
+            # ключ — последнее ждущее сообщение: то же сообщение второй раз карточкой не станет
+            mark = (wait[-1].get("id") if wait else "") or r.get("last")
+            items.append({"key": f"{box}:{mark}", "box": box, "src": "whatsapp", "tier": t,
                           "where": labels.get(ch, "WhatsApp") + (" · группа" if group else ""),
                           "from": r.get("name") or digits, "text": text[:1200], "at": iso_utc(last),
                           "link": f"https://wa.me/{digits}" if digits and not group and len(digits) <= 15 else "",
