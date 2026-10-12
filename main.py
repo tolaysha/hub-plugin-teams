@@ -5,8 +5,9 @@
 команд — постами {"kind": "channels"} (частями); какие из них читать, владелец выбирает во вкладке — его пост
 {"kind": "watch", "ids"} (Choice). Его же посты из вкладки и приложений: {"kind": "send", id, rid, text[, at]} — ответ
 (at — время в будущем: отложенная отправка, {"kind": "cancel", rid} её снимает), {"kind": "react", id, rid, emoji} —
-реакция, {"kind": "settings", signature, autodraft} — подпись черновиков и «черновик сразу». В ответ плагин постит
-sent / send_failed / scheduled / canceled / reacted / react_failed и {"kind": "config"} — действующие настройки.
+реакция, {"kind": "settings", signature, autodraft} — подпись черновиков и «черновик сразу», {"kind": "history", id} —
+показать всю переписку вокруг сообщения. В ответ плагин постит sent / send_failed / scheduled / canceled / reacted /
+react_failed, {"kind": "config"} — действующие настройки и {"kind": "thread", id, part, of, items} — переписку кусками.
 Владелец ответил
 в той же переписке позже — пост {"kind": "answered", "id"}. Сбой чтения FAIL_AFTER раз подряд — {"kind": "status",
 "ok": false, "error"}, восстановилось — {"kind": "status", "ok": true}: вкладка показывает это плашкой. Модели нет.
@@ -43,7 +44,7 @@ OVERLAP = timedelta(minutes=15)    # окно назад от прошлого �
 FAIL_AFTER = 3
 SEEN_MAX, OPEN_MAX = 3000, 500
 POST_MAX = 2000
-OWNER_KINDS = re.compile(rb'watch|\\"(?:send|react|cancel|settings)\\"')   # посты владельца, которые читает процесс
+OWNER_KINDS = re.compile(rb'watch|\\"(?:send|react|cancel|settings|history)\\"')   # посты владельца, которые читает процесс
 DIR_EVERY = 6 * 3600               # список каналов команд перечитываем и заново постим раз в 6 часов: канал плагина
                                    # хранит 500 последних постов, старые списки вытесняются сообщениями
 
@@ -145,6 +146,8 @@ class Choice:
                 self.sends.append({"react": body["emoji"], "id": body["id"], "rid": body["rid"]})
         elif isinstance(body, dict) and body.get("kind") == "cancel" and isinstance(body.get("rid"), str):
             self.sends.append({"cancel": body["rid"]})
+        elif isinstance(body, dict) and body.get("kind") == "history" and isinstance(body.get("id"), str):
+            self.sends.append({"history": body["id"], "ts": ev.get("ts") or 0})
         elif isinstance(body, dict) and body.get("kind") == "settings":
             self.settings = {"signature": str(body.get("signature") or "")[:300],
                              "autodraft": body.get("autodraft") is not False}
@@ -417,6 +420,9 @@ def send_replies(st, reader, queue, put=post, now=None):
     done = st.setdefault("sent_rids", [])
     later = st.setdefault("later", {})
     for q in queue:
+        if "history" in q:
+            history(st, reader, q, put)
+            continue
         if "cancel" in q:
             held = later.pop(q["cancel"], None)
             if held:   # снятое не уйдёт и после перезапуска (журнал читается заново)
@@ -436,6 +442,48 @@ def send_replies(st, reader, queue, put=post, now=None):
         if due(q["at"], now):
             del later[rid]
             send_one(st, reader, {**q, "rid": rid}, put)
+
+
+HISTORY_FRESH = 300    # просьба старше — из перечитанного журнала: не исполняем
+HISTORY_EVERY = 120    # одну переписку перечитываем не чаще
+HISTORY_TEXT = 500
+
+
+def history(st, reader, q, put=post, now=None):
+    """Вся переписка вокруг сообщения — по просьбе владельца (он открыл сообщение в приложении): посты {"kind":
+    "thread", id, part, of, items: [{at, from, me, text}]} по длине поста. WhatsApp — только из сохранённой копии."""
+    now = now or time.time()
+    key, seen = q["history"], st.setdefault("hist", {})
+    ref = (st.get("refs") or {}).get(key)
+    if not ref or now - (q.get("ts") or now) > HISTORY_FRESH or now - seen.get(key, 0) < HISTORY_EVERY:
+        return
+    seen[key] = now
+    for k in [k for k, t in seen.items() if now - t > 86400]:
+        del seen[k]
+    try:
+        if ref.get("wa") or ref.get("mail"):
+            items = sources.history(ref)
+        else:
+            if not reader.mcp:
+                reader.connect(st)
+            items = collect.history(reader.mcp, ref, st["me"]["id"])
+    except Exception as e:   # noqa: BLE001 — истории нет, сообщение всё равно видно
+        reader.close()
+        print(f"teams: переписка {key} не прочитана: {e}", file=sys.stderr, flush=True)
+        items = []
+    parts, cur, size = [], [], 0
+    for it in items:
+        it = {**it, "text": it["text"] if len(it["text"]) <= HISTORY_TEXT else it["text"][:HISTORY_TEXT].rstrip() + "…",
+              "from": it["from"][:60]}
+        n = len(json.dumps(it, ensure_ascii=False)) + 2
+        if cur and size + n > 1600:
+            parts.append(cur)
+            cur, size = [], 0
+        cur.append(it)
+        size += n
+    parts = parts + [cur] if cur or not parts else parts
+    for n, part in enumerate(parts):
+        put({"kind": "thread", "id": key, "part": n, "of": len(parts), "items": part})
 
 
 def send_one(st, reader, q, put=post):

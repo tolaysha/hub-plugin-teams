@@ -204,6 +204,26 @@ def react(mcp, ref, emoji):
     raise OSError("на это сообщение реакцию поставить нельзя")
 
 
+def history(mcp, ref, me, top=20):
+    """Переписка вокруг сообщения — для «всей переписки» во вкладке: последние сообщения чата или тред канала (первое
+    сообщение и ответы). Чтение через Graph ничего не отмечает прочитанным. [{at, from, me, text}] по времени."""
+    if ref.get("chat"):
+        rows = mcp.call("list-chat-messages", {"chatId": ref["chat"], "top": top, "orderby": "createdDateTime desc"}).get("value", [])
+    elif ref.get("team") and ref.get("channel") and ref.get("root"):
+        args = {"teamId": ref["team"], "channelId": ref["channel"], "chatMessageId": ref["root"]}
+        rows = [mcp.call("get-channel-message", args)] + mcp.call("list-channel-message-replies", {**args, "top": top}).get("value", [])
+    else:
+        return []
+    out = []
+    for m in rows:
+        who, text = sender(m), plain((m.get("body") or {}).get("content"))
+        if m.get("messageType") != "message" or m.get("deletedDateTime") or not who.get("id") or not text:
+            continue
+        out.append({"at": m.get("createdDateTime") or "", "from": who.get("displayName") or "", "me": who["id"] == me,
+                    "text": text})
+    return sorted(out, key=lambda x: x["at"])[-top:]
+
+
 def latest_incoming(mcp, me, top=30):
     """Самое свежее чужое сообщение среди последних чатов (по превью) — доказательство во вкладке, что чтение идёт, а
     нового просто нет: {from, where, at} или None."""

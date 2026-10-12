@@ -172,7 +172,7 @@ def whatsapp(cfg, now):
                           "from": r.get("name") or digits, "text": text[:1200], "at": iso_utc(last),
                           "link": f"https://wa.me/{digits}" if digits and not group and len(digits) <= 15 else "",
                           "mention": False,
-                          "ref": {"wa": ch, "to": cid, "send": expand(cfg.get("send") or "~/.claude/bin/send"),
+                          "ref": {"wa": ch, "to": cid, "cmd": cmd, "send": expand(cfg.get("send") or "~/.claude/bin/send"),
                                   **({"react": expand(cfg["react"]), "msg": (r.get("messages") or [{}])[-1].get("id")}
                                      if cfg.get("react") and (r.get("messages") or [{}])[-1].get("id") else {})}})
     if errors and not ok:
@@ -243,3 +243,39 @@ def react(ref, emoji):
         return run([ref["react"], "react", ref["to"], "--id", ref["msg"], "--emoji", emoji, "--channel", ref["wa"]],
                    timeout=120)
     raise OSError("на это сообщение реакцию поставить нельзя")
+
+
+def history(ref, top=20):
+    """Переписка для «всей переписки» во вкладке. WhatsApp — только сохранённая копия треда (`--cached`): живое чтение
+    открыло бы чат и поставило синие галочки. Почта — письма цепочки: от кого, когда, начало текста."""
+    if ref.get("wa"):
+        who = ref["to"] if ref["to"].endswith("@g.us") else re.sub(r"\D", "", ref["to"].split("@")[0])
+        try:
+            data = json.loads(run([ref.get("cmd") or expand("~/.claude/bin/wa"), "thread", who, "--cached", "--json",
+                                   "--limit", str(top), "--channel", ref["wa"]]))
+        except OSError:
+            return []   # копии нет — истории нет; чат ради неё не открываем
+        out = []
+        for m in data.get("messages") or []:
+            try:
+                at = iso_utc(datetime.strptime(m.get("when") or "", "%I:%M %p, %m/%d/%Y"))
+            except ValueError:
+                at = ""
+            text = (m.get("body") or "").strip() or ("[медиа]" if m.get("media") else "")
+            if text:
+                out.append({"at": at, "from": m.get("author") or "", "me": bool(m.get("out")), "text": text})
+        return out
+    if ref.get("mail"):
+        data = json.loads(run([ref["cmd"], "gmail", "thread", "get", ref["thread"], "-a", ref["mail"], "-j"]))
+        out = []
+        for m in (data.get("thread") or {}).get("messages") or []:
+            heads = {h.get("name", "").lower(): h.get("value", "") for h in (m.get("payload") or {}).get("headers") or []}
+            try:
+                at = iso_utc(datetime.fromtimestamp(int(m.get("internalDate") or 0) / 1000, timezone.utc))
+            except (ValueError, OSError):
+                at = ""
+            name = re.sub(r"\s*<[^>]*>\s*$", "", heads.get("from", "")).strip().strip('"')
+            out.append({"at": at, "from": name, "me": "SENT" in (m.get("labelIds") or []),
+                        "text": (m.get("snippet") or "").strip() or heads.get("subject", "")})
+        return out[-top:]
+    return []

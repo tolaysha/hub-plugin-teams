@@ -399,6 +399,41 @@ class Later(unittest.TestCase):
         main.settings(st, C(), self.out.append)   # не изменилось — второй раз не постим
         self.assertEqual(self.out, [{"kind": "config", "v": 2, "signature": "_Хаб_", "autodraft": True}])
 
+    def test_history_comes_in_parts_once_and_never_from_a_replayed_journal(self):
+        import time
+        rows = [{"at": f"2026-10-10T08:{n:02d}:00Z", "from": "Алекс", "me": n % 2 == 0, "text": "слово " * 120} for n in range(8)]
+        real = collect.history
+        collect.history = lambda mcp, ref, me: rows
+        try:
+            st = {"refs": {"k1": {"chat": "c1", "msg": "m1"}}, "me": {"id": "me"}}
+            now = time.time()
+            main.send_replies(st, self.R(), [{"history": "k1", "ts": now}], self.out.append)
+            main.send_replies(st, self.R(), [{"history": "k1", "ts": now}], self.out.append)        # только что читали
+            main.send_replies(st, self.R(), [{"history": "нет", "ts": now}], self.out.append)       # не знаем, где оно
+            st["hist"] = {}
+            main.send_replies(st, self.R(), [{"history": "k1", "ts": now - 3600}], self.out.append)  # журнал перечитан
+        finally:
+            collect.history = real
+        self.assertTrue(all(p["kind"] == "thread" and p["id"] == "k1" for p in self.out))
+        self.assertEqual([p["part"] for p in self.out], list(range(len(self.out))))
+        self.assertEqual({p["of"] for p in self.out}, {len(self.out)})
+        self.assertGreater(len(self.out), 1)
+        self.assertEqual(sum(len(p["items"]) for p in self.out), 8)
+        self.assertTrue(all(len(main.json.dumps(p, ensure_ascii=False)) <= 2000 for p in self.out))
+        self.assertTrue(all(len(i["text"]) <= 501 for p in self.out for i in p["items"]))
+
+    def test_whatsapp_history_only_from_the_saved_copy(self):
+        import sources
+        ran, real = [], sources.run
+        sources.run = lambda cmd, timeout=0: ran.append(cmd) or '{"messages": [{"out": false, "when": "9:35 AM, 10/12/2026", "author": "П", "body": "hola"}, {"out": true, "when": "x", "author": "Я", "body": "", "media": true}]}'
+        try:
+            got = sources.history({"wa": "whatsapp", "to": "5491100000000@c.us", "cmd": "/bin/wa"})
+        finally:
+            sources.run = real
+        self.assertIn("--cached", ran[0])   # живое чтение открыло бы чат и поставило синие галочки
+        self.assertEqual([(g["from"], g["me"], g["text"]) for g in got], [("П", False, "hola"), ("Я", True, "[медиа]")])
+        self.assertTrue(got[0]["at"].startswith("2026-10-12T"))
+
     def test_open_message_learns_reply_address_later(self):
         st = {"seen": ["w1"], "open": {"w1": ["wa:x", "2026-10-10T08:00:00Z"]}}
         item = {"key": "w1", "box": "wa:x", "src": "whatsapp", "where": "", "from": "A", "text": "t",
