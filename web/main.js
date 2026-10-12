@@ -596,8 +596,9 @@ function registerView() {
   hub.addView({
     id: "inbox",   // адрес #/x/inbox; канал плагина по-прежнему teams (hub feed teams)
     title: "Inbox",
-    subtitle: "Teams, WhatsApp, почта",
+    subtitle: "Teams, WhatsApp, Telegram, почта",
     icon: "web/icon.svg",
+    pin: true,   // API 1.13: пункт выше «Расписания» (владелец 12.10)
     badge: count((m) => !done(m)),
     full: true,
     async render(root, snap) {
