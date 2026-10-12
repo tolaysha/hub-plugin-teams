@@ -95,6 +95,14 @@ class Mentions(unittest.TestCase):
         out = collect.channel_mentions(Fake(hits=hits), CUT, "me@x", "Owner",
                                        {"c1": {"team": "Dev", "channel": "Backend", "teamId": "t"}}, skip={"sup"})
         self.assertEqual([(i["text"], i["where"]) for i in out], [("Owner посмотри", "Dev › Backend")])
+        # адрес ответа есть: корень треда и сообщение — можно ответить и поставить реакцию (12.10: у бота Workflows не было)
+        self.assertEqual(out[0]["ref"], {"team": "t", "channel": "c1", "root": "1", "msg": "1"})
+        self.assertTrue(collect.can_react(out[0]["ref"]))
+        reply = hit("9", "c1", "bot", "Owner, го на митинг")
+        reply["resource"]["replyToId"] = "root7"
+        out = collect.channel_mentions(Fake(hits=[reply]), CUT, "me@x", "Owner",
+                                       {"c1": {"team": "Dev", "channel": "Backend", "teamId": "t"}})
+        self.assertEqual(out[0]["ref"]["root"], "root7")
 
 
 class Tick(unittest.TestCase):

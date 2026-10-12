@@ -160,7 +160,12 @@ def channel_mentions(mcp, cutoff, me_mail, name, channels=None, skip=(), size=25
             out.append({"key": key(ch["channelId"], r.get("id")), "box": None, "src": "mention",
                         "where": f"{c['team']} › {c['channel']}" if c else "Канал Teams",
                         "from": mail.get("name") or "", "text": summary, "at": r["createdDateTime"],
-                        "link": r.get("webLink") or "", "mention": True})
+                        "link": r.get("webLink") or "", "mention": True,
+                        # куда отвечать: поиск отдаёт канал и сообщение; корень треда — replyToId (иначе само сообщение —
+                        # корень). Без адреса запись была без «Ответить» и реакции (владелец 12.10, бот Workflows)
+                        **({"ref": {"team": c["teamId"], "channel": ch["channelId"],
+                                    "root": r.get("replyToId") or r.get("id"), "msg": r.get("id")}}
+                           if c and c.get("teamId") and r.get("id") else {})})
     return out
 
 
