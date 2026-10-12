@@ -171,7 +171,10 @@ def whatsapp(cfg, now):
                           "where": labels.get(ch, "WhatsApp") + (" · группа" if group else ""),
                           "from": r.get("name") or digits, "text": text[:1200], "at": iso_utc(last),
                           "link": f"https://wa.me/{digits}" if digits and not group and len(digits) <= 15 else "",
-                          "mention": False})
+                          "mention": False,
+                          "ref": {"wa": ch, "to": cid, "send": expand(cfg.get("send") or "~/.claude/bin/send"),
+                                  **({"react": expand(cfg["react"]), "msg": (r.get("messages") or [{}])[-1].get("id")}
+                                     if cfg.get("react") and (r.get("messages") or [{}])[-1].get("id") else {})}})
     if errors and not ok:
         raise OSError("; ".join(errors))
     return items, boxes, errors
@@ -211,7 +214,32 @@ def email(cfg, now):
             items.append({"key": f"{box}:{th.get('date')}:{th.get('messageCount')}", "box": box, "src": "email",
                           "tier": t, "where": "Почта" + (f" · {acct}" if len(cfg.get("accounts") or []) > 1 else ""),
                           "from": name or "—", "text": subject or "(без темы)", "at": at,
-                          "link": f"https://mail.google.com/mail/u/{acct}/#inbox/{th['id']}", "mention": False})
+                          "link": f"https://mail.google.com/mail/u/{acct}/#inbox/{th['id']}", "mention": False,
+                          "ref": {"mail": acct, "thread": th["id"], "subject": subject, "cmd": cmd}})
     if errors and not ok:
         raise OSError("; ".join(errors))
     return items, boxes, errors
+
+
+# --- Ответ владельца из вкладки в WhatsApp и почту: теми же командами машины, что читают -----------------------------
+def reply(ref, text):
+    """WhatsApp — сообщением в тот же чат (команда send из sources.json: её ночные и прочие запреты действуют — отказ
+    вернётся ошибкой во вкладку); почта — ответом всем в ту же цепочку."""
+    if ref.get("wa"):
+        return run([ref["send"], "wa", "--to", ref["to"], "--channel", ref["wa"], "--text", text], timeout=180)
+    if ref.get("mail"):
+        subject = ref.get("subject") or ""
+        if not re.match(r"(?i)re:", subject):
+            subject = "Re: " + subject
+        return run([ref["cmd"], "gmail", "send", "--thread-id", ref["thread"], "--reply-all", "--subject", subject,
+                    "--body", text, "-a", ref["mail"]], timeout=120)
+    raise OSError("не знаю, куда отвечать на это сообщение")
+
+
+def react(ref, emoji):
+    """Реакция в WhatsApp — командой из sources.json (`"react": "<путь>"`): <команда> react <чат> --id <сообщение>
+    --emoji <эмодзи> --channel <номер>."""
+    if ref.get("wa") and ref.get("react") and ref.get("msg"):
+        return run([ref["react"], "react", ref["to"], "--id", ref["msg"], "--emoji", emoji, "--channel", ref["wa"]],
+                   timeout=120)
+    raise OSError("на это сообщение реакцию поставить нельзя")

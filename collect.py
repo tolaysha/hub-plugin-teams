@@ -93,7 +93,7 @@ def chats(mcp, cutoff, me, owner_last, top=30):
                         "where": "Личка" if dm else (c.get("topic") or "Групповой чат"),
                         "from": sender(m).get("displayName") or "", "text": text, "at": m["createdDateTime"],
                         "link": m.get("webUrl") or c.get("webUrl") or "", "mention": mention,
-                        "ref": {"chat": c["id"]}})   # ref — куда отвечать (в посте не уходит; main.py хранит в состоянии)
+                        "ref": {"chat": c["id"], "msg": m["id"]}})   # ref — куда отвечать и на что ставить реакцию (в посте не уходит)
     return out
 
 
@@ -134,7 +134,7 @@ def channel_posts(mcp, channel, info, cutoff, me, owner_last, top=10):
                         "where": label + (f" · {thread}" if m is not root else ""),
                         "from": sender(m).get("displayName") or "", "text": text, "at": m["createdDateTime"],
                         "link": m.get("webUrl") or "", "mention": mention,
-                        "ref": {"team": team, "channel": channel, "root": root["id"]}})
+                        "ref": {"team": team, "channel": channel, "root": root["id"], "msg": m["id"]}})
     return out
 
 
@@ -179,6 +179,29 @@ def reply(mcp, ref, text):
         return mcp.call("reply-to-channel-message", {"teamId": ref["team"], "channelId": ref["channel"],
                                                      "chatMessageId": ref["root"], "body": body}, empty_ok=True)
     raise OSError("не знаю, куда отвечать на это сообщение")
+
+
+def can_react(ref):
+    """На что можно поставить реакцию: сообщение чата и первое сообщение треда канала (ответу в треде Graph реакцию
+    этим вызовом не ставит); WhatsApp — когда в sources.json задана команда реакции."""
+    ref = ref or {}
+    if ref.get("wa"):
+        return bool(ref.get("react"))
+    if ref.get("chat"):
+        return bool(ref.get("msg"))
+    return bool(ref.get("root")) and ref.get("msg") == ref.get("root")
+
+
+def react(mcp, ref, emoji):
+    """Реакция владельца на сообщение: эмодзи как есть (Graph: reactionType — символ Unicode)."""
+    body = {"reactionType": emoji}
+    if ref.get("chat") and ref.get("msg"):
+        return mcp.call("set-chat-message-reaction", {"chatId": ref["chat"], "chatMessageId": ref["msg"],
+                                                      "body": body}, empty_ok=True)
+    if ref.get("team") and ref.get("channel") and ref.get("root") and ref.get("msg") == ref["root"]:
+        return mcp.call("set-channel-message-reaction", {"teamId": ref["team"], "channelId": ref["channel"],
+                                                         "chatMessageId": ref["root"], "body": body}, empty_ok=True)
+    raise OSError("на это сообщение реакцию поставить нельзя")
 
 
 def latest_incoming(mcp, me, top=30):

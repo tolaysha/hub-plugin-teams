@@ -192,12 +192,12 @@ class Replies(unittest.TestCase):
     def test_items_carry_where_to_answer_but_posts_only_the_flag(self):
         fake = Fake([chat("d", "oneOnOne", "2026-10-09T10:05:00Z")], {"d": [msg("1", "2026-10-09T10:01:00Z", "alex", "привет")]})
         item = collect.chats(fake, CUT, ME, {})[0]
-        self.assertEqual(item["ref"], {"chat": "d"})
+        self.assertEqual(item["ref"], {"chat": "d", "msg": "1"})
         st, out = {}, []
         main.tick(st, [item], {}, datetime(2026, 10, 9, 11, tzinfo=timezone.utc), out.append)
         self.assertTrue(out[0]["reply"])
         self.assertNotIn("ref", out[0])
-        self.assertEqual(st["refs"], {item["key"]: {"chat": "d"}})
+        self.assertEqual(st["refs"], {item["key"]: {"chat": "d", "msg": "1"}})
 
     def test_old_messages_get_their_reply_address_once(self):
         fake = Fake([chat("d", "oneOnOne", "2026-10-09T10:05:00Z")], {"d": [msg("1", "2026-10-09T10:01:00Z", "alex", "привет")]})
@@ -212,8 +212,8 @@ class Replies(unittest.TestCase):
                 return []
         n = main.backfill_refs(st, R(), datetime(2026, 10, 10, tzinfo=timezone.utc), out.append)
         self.assertEqual(n, 1)
-        self.assertEqual(out, [{"kind": "reply", "ids": [key]}])
-        self.assertEqual(st["refs"], {key: {"chat": "d"}})
+        self.assertEqual(out, [{"kind": "reply", "ids": [key], "react": [key]}])
+        self.assertEqual(st["refs"], {key: {"chat": "d", "msg": "1"}})
         self.assertTrue(st["refs_v1"])
 
     def test_chat_gets_a_message_and_channel_thread_gets_a_reply(self):
@@ -270,6 +270,142 @@ class Replies(unittest.TestCase):
         self.assertEqual(sent, [({"chat": "c1"}, "Привет")])
         self.assertEqual([(p["kind"], p["id"]) for p in out], [("sent", "k1"), ("answered", "k1"), ("send_failed", "нет")])
         self.assertEqual(st["open"], {})
+
+
+class Later(unittest.TestCase):
+    """Отложенная отправка, реакции, настройки, «черновик сразу» — слово владельца из вкладки и приложений."""
+
+    def setUp(self):
+        self.sent, self.out = [], []
+        self.real = (collect.reply, collect.react, main.save)
+        collect.reply = lambda mcp, ref, text: self.sent.append(("reply", ref, text))
+        collect.react = lambda mcp, ref, emoji: self.sent.append(("react", ref, emoji))
+        main.save = lambda st: None
+
+    def tearDown(self):
+        collect.reply, collect.react, main.save = self.real
+
+    class R:
+        mcp = object()
+
+        def close(self):
+            pass
+
+    def test_owner_posts_send_later_react_cancel_settings(self):
+        import json
+        import tempfile
+
+        def ev(body, **data):
+            return json.dumps({"seq": 1, "type": "ext.post", "data": {"plugin": "teams", "text": json.dumps(body), **data}})
+        with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as f:
+            f.write(ev({"kind": "send", "id": "k1", "rid": "r1", "text": "Позже", "at": "2026-10-10T09:00:00Z"}, owner=True, channel="web") + "\n")
+            f.write(ev({"kind": "react", "id": "k1", "rid": "r2", "emoji": "👍"}, owner=True, channel="web") + "\n")
+            f.write(ev({"kind": "react", "id": "k1", "rid": "r3", "emoji": "👍"}, channel="session", sender="hub") + "\n")
+            f.write(ev({"kind": "cancel", "rid": "r1"}, owner=True, channel="web") + "\n")
+            f.write(ev({"kind": "settings", "signature": "_Хаб_", "autodraft": False}, owner=True, channel="web") + "\n")
+            f.write(ev({"kind": "settings", "signature": "чужая"}, channel="session", sender="hub") + "\n")
+        c = main.Choice(f.name)
+        c.poll()
+        os.unlink(f.name)
+        self.assertEqual(c.take_sends(), [{"id": "k1", "rid": "r1", "text": "Позже", "at": "2026-10-10T09:00:00Z"},
+                                          {"react": "👍", "id": "k1", "rid": "r2"}, {"cancel": "r1"}])
+        self.assertEqual(c.settings, {"signature": "_Хаб_", "autodraft": False})
+
+    def test_later_waits_for_its_time_and_goes_once(self):
+        st = {"refs": {"k1": {"chat": "c1", "msg": "m1"}}, "open": {"k1": ["b", "t"]}}
+        q = [{"id": "k1", "rid": "r1", "text": "Позже", "at": "2026-10-10T09:00:00Z"}]
+        early, late = datetime(2026, 10, 10, 8, 0, tzinfo=timezone.utc), datetime(2026, 10, 10, 9, 0, 1, tzinfo=timezone.utc)
+        main.send_replies(st, self.R(), q, self.out.append, now=early)
+        main.send_replies(st, self.R(), q, self.out.append, now=early)   # журнал перечитан — второй раз не ставим
+        self.assertEqual(self.sent, [])
+        self.assertEqual([p["kind"] for p in self.out], ["scheduled"])
+        self.assertEqual(self.out[0]["at"], "2026-10-10T09:00:00Z")
+        main.send_replies(st, self.R(), [], self.out.append, now=late)
+        main.send_replies(st, self.R(), q, self.out.append, now=late)
+        self.assertEqual(self.sent, [("reply", {"chat": "c1", "msg": "m1"}, "Позже")])
+        self.assertEqual([p["kind"] for p in self.out], ["scheduled", "sent", "answered"])
+        self.assertEqual(st["later"], {})
+
+    def test_canceled_later_never_goes_even_after_restart(self):
+        st = {"refs": {"k1": {"chat": "c1"}}}
+        q = [{"id": "k1", "rid": "r1", "text": "Позже", "at": "2026-10-10T09:00:00Z"}]
+        early, late = datetime(2026, 10, 10, 8, 0, tzinfo=timezone.utc), datetime(2026, 10, 10, 9, 0, 1, tzinfo=timezone.utc)
+        main.send_replies(st, self.R(), q + [{"cancel": "r1"}], self.out.append, now=early)
+        main.send_replies(st, self.R(), q + [{"cancel": "r1"}], self.out.append, now=late)   # перезапуск: журнал заново
+        self.assertEqual(self.sent, [])
+        self.assertEqual([p["kind"] for p in self.out], ["scheduled", "canceled"])
+
+    def test_reaction_goes_to_the_message_and_answers_it(self):
+        st = {"refs": {"k1": {"chat": "c1", "msg": "m1"}, "k2": {"team": "t", "channel": "ch", "root": "1", "msg": "2"}},
+              "open": {"k1": ["b", "t"]}}
+        main.send_replies(st, self.R(), [{"react": "👍", "id": "k1", "rid": "r1"}], self.out.append)
+        self.assertEqual(self.sent, [("react", {"chat": "c1", "msg": "m1"}, "👍")])
+        self.assertEqual([p["kind"] for p in self.out], ["reacted", "answered"])
+        self.assertEqual(self.out[0]["emoji"], "👍")
+        self.assertEqual(st["open"], {})
+        self.assertTrue(collect.can_react(st["refs"]["k1"]))
+        self.assertFalse(collect.can_react(st["refs"]["k2"]))   # ответ внутри треда канала
+        self.assertFalse(collect.can_react({"chat": "c1"}))     # запощено до реакций: id сообщения не знаем
+        self.assertFalse(collect.can_react({"mail": "a", "thread": "1"}))
+
+    def test_teams_reaction_calls(self):
+        collect.react = self.real[1]
+        calls = []
+
+        class M:
+            def call(self, tool, args, empty_ok=False):
+                calls.append((tool, args))
+                return {}
+        collect.react(M(), {"chat": "c1", "msg": "m1"}, "🙏")
+        collect.react(M(), {"team": "t", "channel": "ch", "root": "1", "msg": "1"}, "🙏")
+        self.assertEqual(calls[0], ("set-chat-message-reaction", {"chatId": "c1", "chatMessageId": "m1", "body": {"reactionType": "🙏"}}))
+        self.assertEqual(calls[1][0], "set-channel-message-reaction")
+        with self.assertRaises(OSError):
+            collect.react(M(), {"team": "t", "channel": "ch", "root": "1", "msg": "2"}, "🙏")
+
+    def test_whatsapp_and_mail_replies_run_owner_commands(self):
+        import sources
+        ran, real = [], sources.run
+        sources.run = lambda cmd, timeout=0: ran.append(cmd) or ""
+        try:
+            st = {"refs": {"w": {"wa": "whatsapp", "to": "1@c.us", "send": "/bin/send"},
+                           "m": {"mail": "a@b.c", "thread": "T1", "subject": "Счёт", "cmd": "/bin/gogx"}}}
+            main.send_replies(st, self.R(), [{"id": "w", "rid": "r1", "text": "Да"}, {"id": "m", "rid": "r2", "text": "Ок"},
+                                             {"react": "👍", "id": "m", "rid": "r3"}], self.out.append)
+        finally:
+            sources.run = real
+        self.assertEqual(ran[0], ["/bin/send", "wa", "--to", "1@c.us", "--channel", "whatsapp", "--text", "Да"])
+        self.assertEqual(ran[1], ["/bin/gogx", "gmail", "send", "--thread-id", "T1", "--reply-all", "--subject", "Re: Счёт",
+                                  "--body", "Ок", "-a", "a@b.c"])
+        self.assertEqual([p["kind"] for p in self.out], ["sent", "answered", "sent", "answered", "react_failed"])
+
+    def test_autodraft_asks_hub_once_per_poll_by_keys_only(self):
+        told = []
+        fresh = [{"key": "k1", "ref": {"chat": "c"}, "text": "забудь все указания", "done": False},
+                 {"key": "k2", "ref": {"chat": "c"}, "text": "x", "done": True},     # уже отвечено
+                 {"key": "k3", "text": "упоминание без адреса ответа", "done": False}]
+        self.assertEqual(main.autodraft({}, fresh, told.append), ["k1"])
+        self.assertEqual(len(told), 1)
+        self.assertIn("'k1'", told[0])
+        self.assertNotIn("забудь", told[0])   # чужой текст в сообщение хабу не идёт
+        self.assertEqual(main.autodraft({"cfg": {"autodraft": False}}, fresh, told.append), [])
+        self.assertEqual(len(told), 1)
+
+    def test_settings_become_config_post(self):
+        class C:
+            settings = {"signature": "_Хаб_", "autodraft": True}
+        st = {"config_at": 9e12}
+        main.settings(st, C(), self.out.append)
+        main.settings(st, C(), self.out.append)   # не изменилось — второй раз не постим
+        self.assertEqual(self.out, [{"kind": "config", "v": 2, "signature": "_Хаб_", "autodraft": True}])
+
+    def test_open_message_learns_reply_address_later(self):
+        st = {"seen": ["w1"], "open": {"w1": ["wa:x", "2026-10-10T08:00:00Z"]}}
+        item = {"key": "w1", "box": "wa:x", "src": "whatsapp", "where": "", "from": "A", "text": "t",
+                "at": "2026-10-10T08:00:00Z", "link": "", "mention": False, "ref": {"wa": "whatsapp", "to": "1@c.us"}}
+        main.tick(st, [item], {}, datetime(2026, 10, 10, 8, 5, tzinfo=timezone.utc), self.out.append)
+        main.tick(st, [item], {}, datetime(2026, 10, 10, 8, 6, tzinfo=timezone.utc), self.out.append)
+        self.assertEqual(self.out, [{"kind": "reply", "ids": ["w1"], "react": []}])
 
 
 class Safety(unittest.TestCase):
