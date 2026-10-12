@@ -230,6 +230,22 @@ def media_dir(src):
     return d
 
 
+def _playable(path):
+    """Голосовые Telegram приходят в ogg/opus — системный плеер iOS/macOS его не играет. Рядом кладём m4a (AAC),
+    клиентам отдаём его; нет ffmpeg или не вышло — как есть."""
+    if not path.lower().endswith((".ogg", ".oga", ".opus")):
+        return path
+    out = os.path.splitext(path)[0] + ".m4a"
+    if os.path.exists(out):
+        return out
+    try:
+        subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-i", path, "-vn", "-c:a", "aac", "-b:a", "48k", out],
+                       timeout=60, check=True, capture_output=True)
+    except (OSError, subprocess.SubprocessError):
+        return path
+    return out
+
+
 def _transcript(path):
     """Расшифровка голосового сразу (Whisper / ChatGPT по настройкам хаба); рядом `.txt` — второй раз не гоняем.
     Пусто — голос не настроен или не вышло: клиент покажет один плеер."""
@@ -281,6 +297,10 @@ def tg_media(cmd, chat, msgs, keep=MEDIA_KEEP):
                 t = _transcript(path)
                 if t:
                     item["text"] = t
+                play = _playable(path)
+                if play != path:
+                    item["url"] = "/api/file?path=" + quote(play, safe="")
+                    item["mime"] = "audio/mp4"
         out.append(item)
     return out
 
@@ -333,6 +353,8 @@ def telegram(cfg, now):
         mark = (wait[-1].get("id") if wait else "") or r.get("last")
         user = r.get("username") or ""
         media = tg_media(cmd, cid, wait)
+        if media and not any((m.get("text") or "").strip() for m in wait):
+            text = ""   # 12.10: у медиа без подписи заглушки («[фото]», «1 сообщение без текста») не кладём — клиент рисует само вложение
         links = [m["link"] for m in wait if m.get("link")][-3:]
         items.append({"key": f"{box}:{mark}", "box": box, "src": "telegram", "tier": t,
                       "where": "Telegram" + (" · группа" if group else ""), "from": r.get("name") or cid,

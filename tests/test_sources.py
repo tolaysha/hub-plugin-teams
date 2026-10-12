@@ -293,6 +293,23 @@ class Context(unittest.TestCase):
         self.assertFalse(main.colleague(pablo, None))                     # по умолчанию — без подписи
 
 
+class Playable(unittest.TestCase):
+    def test_ogg_voice_gets_an_m4a_twin_for_system_players(self):
+        """12.10: голосовое Telegram (ogg/opus) клиентам iOS/macOS отдаётся m4a; не ogg — как есть."""
+        import shutil, subprocess
+        from sources import _playable
+        d = tempfile.mkdtemp()
+        self.assertEqual(_playable(os.path.join(d, "a.jpg")), os.path.join(d, "a.jpg"))
+        if not shutil.which("ffmpeg"):
+            self.skipTest("нет ffmpeg")
+        ogg = os.path.join(d, "v.ogg")
+        subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "sine=d=0.5", "-c:a", "libopus", ogg], check=True)
+        out = _playable(ogg)
+        self.assertTrue(out.endswith(".m4a") and os.path.getsize(out) > 0)
+        open(os.path.join(d, "bad.ogg"), "w").write("не аудио")
+        self.assertTrue(_playable(os.path.join(d, "bad.ogg")).endswith("bad.ogg"))
+
+
 if __name__ == "__main__":
     unittest.main()
 
