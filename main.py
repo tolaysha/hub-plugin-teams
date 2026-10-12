@@ -404,7 +404,7 @@ def tick(st, items, owner_last, now, put=post):
     return fresh
 
 
-def run_sources(st, now, put=post):
+def run_sources(st, now, put=post, between=None):
     """Остальные каналы (sources.py), каждый сам по себе: сбой WhatsApp не мешает почте и Teams. Включены те, что есть
     в sources.json. Возвращает (items, cleared): cleared — переписки, что были открыты и пропали из «ждут вас»."""
     try:
@@ -419,6 +419,8 @@ def run_sources(st, now, put=post):
         s = state.setdefault(name, {"fails": 0, "at": 0, "boxes": []})
         if not isinstance(c, dict) or time.time() - s["at"] < src["every"]:
             continue
+        if between:   # чтение источника — десятки секунд; ответ владельца из приложения уходит между ними, не после круга
+            between()
         s["at"] = time.time()
         try:
             got, boxes, errors = src["fn"](c, now)
@@ -671,7 +673,13 @@ def main():
             if st["fails"] == FAIL_AFTER:
                 # в канал плагина (его читают все сессии) — первая строка ошибки, без хвоста stderr сервера ms365
                 post({"kind": "status", "ok": False, "error": short(e), "at": iso(now)})
-        extra, cleared = run_sources(st, now)
+        def between():
+            choice.poll()
+            queue = choice.take_sends()
+            if queue:
+                send_replies(st, reader, queue)
+        between()
+        extra, cleared = run_sources(st, now, between=between)
         items += extra
         for box in cleared:
             owner_last[box] = iso(now)

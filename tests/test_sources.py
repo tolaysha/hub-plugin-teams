@@ -310,6 +310,30 @@ class Playable(unittest.TestCase):
         self.assertTrue(_playable(os.path.join(d, "bad.ogg")).endswith("bad.ogg"))
 
 
+class BetweenSources(unittest.TestCase):
+    def test_owner_replies_go_out_between_source_reads(self):
+        """12.10: «Sending…» висело ~50 с — ответ ждал конца круга чтения. Теперь разбор очереди — перед каждым источником."""
+        import json as J, main
+        d = tempfile.mkdtemp()
+        old = main.OWN
+        main.OWN = d
+        try:
+            with open(os.path.join(d, "sources.json"), "w") as f:
+                J.dump({"whatsapp": {}, "telegram": {}}, f)
+            order = []
+            orig = dict(main.sources.SOURCES)
+            main.sources.SOURCES = {n: {"every": 0, "fn": (lambda n: lambda c, now: (order.append(n) or ([], set(), [])))(n)}
+                                    for n in ("whatsapp", "telegram")}
+            try:
+                main.run_sources({}, __import__("datetime").datetime.now(), put=lambda p: None,
+                                 between=lambda: order.append("drain"))
+            finally:
+                main.sources.SOURCES = orig
+        finally:
+            main.OWN = old
+        self.assertEqual(order, ["drain", "whatsapp", "drain", "telegram"])
+
+
 if __name__ == "__main__":
     unittest.main()
 
