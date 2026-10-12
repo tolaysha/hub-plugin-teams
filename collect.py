@@ -5,7 +5,8 @@
 Источник — ms365 MCP (клиент mcp.Mcp). Каждое сообщение — dict
 {key, box, src, where, from, text, at, link, mention}; key — устойчивый короткий ключ (чат/канал + id сообщения), box —
 переписка, где владелец может ответить (чат или тред канала): его ответ там позже сообщения — сообщение отвечено.
-owner_last — {box: время последнего сообщения владельца}, функции дописывают его по ходу чтения."""
+owner_last — {box: время последнего сообщения владельца}, reacted — ключи сообщений с реакцией владельца (реакция —
+тоже ответ); функции дописывают их по ходу чтения."""
 import hashlib
 import html
 import json
@@ -56,6 +57,22 @@ def replies_to_me(m, me):
     return False
 
 
+def reacted_by(m, me):
+    return any(((r.get("user") or {}).get("user") or {}).get("id") == me for r in m.get("reactions") or [])
+
+
+# смех, эмодзи, «ок», «спасибо» — отклик на сообщение, не новое сообщение (владелец 12.10: «не надо реакции на
+# сообщения показывать как сообщения»)
+CHATTER = re.compile(r"(а?ха|a?ha|ах|ah)+[хh]*|х+|[ао]?ок(ей)?|ok(ay)?|спс|спасибо|пасиб\w*|благодарю|thanks?|thx|"
+                     r"понял[аи]?|ясно|ага|угу|да|yes|yep|лол|lol|кек|ору|топ|огонь|супер|класс|круто")
+
+
+def chatter(text):
+    """Только смех, эмодзи, скобки и короткий отклик — без вопроса и дела."""
+    words = [w for w in re.split(r"[\W_]+", text.lower()) if w]
+    return len(words) <= 2 and all(CHATTER.fullmatch(w) for w in words)
+
+
 def fresh(m, cutoff, me):
     """Чужое обычное сообщение не старше cutoff (ISO, UTC): не системное, не удалённое, не владельца, есть автор."""
     who = sender(m)
@@ -68,26 +85,30 @@ def mine(m, me, box, owner_last):
         owner_last[box] = max(owner_last.get(box, ""), m.get("createdDateTime") or "")
 
 
-def chats(mcp, cutoff, me, owner_last, top=30):
+def chats(mcp, cutoff, me, owner_last, top=30, reacted=None, scan=None):
+    """Чаты с новыми сообщениями. scan — раньше cutoff: заодно перечитать чаты с сообщениями не старше scan, чтобы
+    увидеть ответ или реакцию владельца на уже показанное (новых сообщений из них не берём)."""
     out = []
     data = mcp.call("list-chats", {"$top": top, "$expand": "lastMessagePreview",
                                    "$orderby": "lastMessagePreview/createdDateTime desc"})
     for c in data.get("value", []):
         last = (c.get("lastMessagePreview") or {}).get("createdDateTime") or ""
-        if last <= cutoff:
+        if last <= min(cutoff, scan or cutoff):
             continue
         dm = c.get("chatType") == "oneOnOne"
         msgs = mcp.call("list-chat-messages", {"chatId": c["id"], "top": 20, "orderby": "createdDateTime desc"})
         box = key(c["id"], "")
         for m in msgs.get("value", []):
             mine(m, me, box, owner_last)
+            if reacted is not None and reacted_by(m, me):
+                reacted.add(key(c["id"], m["id"]))
             if not fresh(m, cutoff, me):
                 continue
-            mention = mentions_me(m, me)
-            if not (dm or mention or replies_to_me(m, me)):
+            mention, reply = mentions_me(m, me), replies_to_me(m, me)
+            if not (dm or mention or reply):
                 continue
             text = plain((m.get("body") or {}).get("content"))
-            if not text:
+            if not text or (not (mention or reply) and chatter(text)):   # «да» цитатой на его вопрос — ответ
                 continue
             out.append({"key": key(c["id"], m["id"]), "box": box, "src": "dm" if dm else "mention",
                         "where": "Личка" if dm else (c.get("topic") or "Групповой чат"),
@@ -110,7 +131,7 @@ def default_watch(channels):
     return [cid for cid, c in channels.items() if DEFAULT_WATCH and (c["team"], c["channel"]) == DEFAULT_WATCH]
 
 
-def channel_posts(mcp, channel, info, cutoff, me, owner_last, top=10):
+def channel_posts(mcp, channel, info, cutoff, me, owner_last, top=10, reacted=None):
     """Выбранный канал. Треды идут по последней активности: смотрим верхние. Только первое сообщение треда (сам пост);
     ответы внутри треда — только с упоминанием владельца, как упоминание (владелец 09.10: «сообщения внутри поста не
     надо»). Ответы владельца в треде всё равно читаем — по ним пост помечается отвеченным."""
@@ -122,11 +143,13 @@ def channel_posts(mcp, channel, info, cutoff, me, owner_last, top=10):
         box = key(channel, root["id"])
         for m in [root] + list(root.get("replies") or []):
             mine(m, me, box, owner_last)
+            if reacted is not None and reacted_by(m, me):
+                reacted.add(key(channel, m["id"]))
             mention = mentions_me(m, me)
             if not fresh(m, cutoff, me) or (m is not root and not mention):
                 continue
             text = plain((m.get("body") or {}).get("content"))
-            if not text:
+            if not text or (not mention and chatter(text)):
                 continue
             thread = subject or plain((root.get("body") or {}).get("content")).split("\n")[0][:80]
             out.append({"key": key(channel, m["id"]), "box": box, "src": "channel" if m is root else "mention",
@@ -136,9 +159,17 @@ def channel_posts(mcp, channel, info, cutoff, me, owner_last, top=10):
     return out
 
 
+def bot(mail):
+    """Отправитель — приложение (Workflows, Power Automate, боты): адреса нет или он на teams.microsoft.com."""
+    address = (mail.get("address") or "").lower()
+    return not address or address.endswith("@teams.microsoft.com") or (mail.get("name") or "") in ("Workflows", "Power Automate")
+
+
 def channel_mentions(mcp, cutoff, me_mail, name, channels=None, skip=(), size=25):
     """Упоминания владельца в каналах — поиском Graph по его имени (обход всех каналов — десятки вызовов в минуту).
-    Поиск находит и сообщения, где он просто участник, поэтому берём только те, где имя есть в самом тексте."""
+    Поиск находит и сообщения, где он просто участник, поэтому берём только те, где имя есть в самом тексте. Чаты
+    (у них в поиске channelId — это id чата, а teamId нет) читает chats(); боты (Workflows и др., адрес
+    @teams.microsoft.com) — карточки со списком людей, не упоминания (владелец 12.10: «из воркфлоу не надо»)."""
     body = {"requests": [{"entityTypes": ["chatMessage"], "query": {"queryString": name}, "from": 0, "size": size}]}
     data = mcp.call("search-query", {"body": body})
     out = []
@@ -147,7 +178,9 @@ def channel_mentions(mcp, cutoff, me_mail, name, channels=None, skip=(), size=25
             r = h.get("resource") or {}
             ch = r.get("channelIdentity") or {}
             mail = ((r.get("from") or {}).get("emailAddress") or {})
-            if not ch.get("channelId") or ch["channelId"] in skip:   # чаты — в chats(), выбранные — в channel_posts()
+            if not ch.get("channelId") or not ch.get("teamId") or ch["channelId"] in skip:   # выбранные — в channel_posts()
+                continue
+            if bot(mail):
                 continue
             if (r.get("createdDateTime") or "") <= cutoff or (mail.get("address") or "").lower() == me_mail:
                 continue

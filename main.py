@@ -40,6 +40,8 @@ SEEN_MAX, OPEN_MAX = 3000, 500
 POST_MAX = 2000
 DIR_EVERY = 6 * 3600               # список каналов команд перечитываем и заново постим раз в 6 часов: канал плагина
                                    # хранит 500 последних постов, старые списки вытесняются сообщениями
+SCAN_EVERY = 10 * 60               # раз в 10 минут перечитываем чаты за сутки: ответ или реакция владельца на уже
+SCAN_BACK = timedelta(hours=24)    # показанное сообщение, когда новых сообщений в чате нет
 
 
 def iso(t):
@@ -179,16 +181,17 @@ class Reader:
     def refresh(self, st, choice, put):
         """Каналы команд — при старте и раз в DIR_EVERY: посты «channels» во вкладку и рядом {"kind": "watching"} —
         какие каналы читаем сейчас. Тот же набор — и когда поменялся выбор: страница видит ровно то, что читает
-        процесс, даже когда пост владельца «watch» вытеснен из канала (500 постов)."""
-        stale = not self.channels or time.time() - self.listed >= DIR_EVERY
-        if stale:
+        процесс, даже когда пост владельца «watch» вытеснен из канала (500 постов). Перезапуск процесса (каждый
+        перезапуск хаба) список заново не постит, если он тот же и запощен меньше DIR_EVERY назад: иначе списки
+        вытесняли из канала сообщения."""
+        if not self.channels or time.time() - self.listed >= DIR_EVERY:
             self.channels, self.listed = collect.directory(self.mcp), time.time()
-        if stale or st.get("posted_choice") != choice:
-            _, posts = directory_posts(self.channels, collect.default_watch(self.channels))
+        sig, posts = directory_posts(self.channels, collect.default_watch(self.channels))
+        if sig != st.get("dir_sig") or time.time() - st.get("dir_at", 0) >= DIR_EVERY or st.get("posted_choice") != choice:
             for p in posts:
                 put(p)
             put({"kind": "watching", "ids": [channel_key(c) for c in self.watched(choice)]})
-            st["posted_choice"] = choice
+            st.update(posted_choice=choice, dir_sig=sig, dir_at=time.time())
 
     def watched(self, ids):
         """channelId выбранных каналов: выбор владельца (ключи) или канал по умолчанию."""
@@ -198,28 +201,34 @@ class Reader:
         return [cid for cid in self.channels if channel_key(cid) in want]
 
     def read(self, st, cutoff, choice, now, put=None):
-        """Сообщения и {box: ответ владельца}. Какие каналы с какого времени читаем — в self.next_since: в состояние
-        его кладёт main только после удачного чтения (иначе новый канал потерял бы свои сутки)."""
+        """Сообщения, {box: ответ владельца} и ключи сообщений с его реакцией. Какие каналы с какого времени читаем —
+        в self.next_since: в состояние его кладёт main только после удачного чтения (иначе новый канал потерял бы
+        свои сутки)."""
         if not self.mcp:
             self.connect(st)
         self.refresh(st, choice, put or post)
-        me, owner_last = st["me"], {}
-        items = collect.chats(self.mcp, cutoff, me["id"], owner_last)
+        me, owner_last, reacted = st["me"], {}, set()
+        scan = None
+        if time.time() - st.get("scan_at", 0) >= SCAN_EVERY:
+            scan, st["scan_at"] = iso(now - SCAN_BACK), time.time()
+        items = collect.chats(self.mcp, cutoff, me["id"], owner_last, reacted=reacted, scan=scan)
         watched = self.watched(choice)
         since = st.get("watch_since") or {}   # ключ канала → с какого времени следим
         for cid in watched:
             k = channel_key(cid)
             # только что выбранный канал — его посты за сутки, дальше — как все (от прошлого чтения)
             own_cut = cutoff if k in since else iso(now - FIRST_BACK)
-            items += collect.channel_posts(self.mcp, cid, self.channels[cid], own_cut, me["id"], owner_last)
+            items += collect.channel_posts(self.mcp, cid, self.channels[cid], own_cut, me["id"], owner_last,
+                                           reacted=reacted)
         self.next_since = {channel_key(cid): since.get(channel_key(cid)) or iso(now) for cid in watched}
         if me["name"]:
             items += collect.channel_mentions(self.mcp, cutoff, me["mail"], me["name"], self.channels, skip=set(watched))
-        return items, owner_last
+        return items, owner_last, reacted
 
 
-def tick(st, items, owner_last, now, put=post):
-    """Новое — в канал (по возрастанию времени), отвеченное владельцем — пометить. Меняет st."""
+def tick(st, items, owner_last, now, put=post, reacted=()):
+    """Новое — в канал (по возрастанию времени), отвеченное владельцем (ответ в той же переписке позже или его
+    реакция на само сообщение) — пометить. Меняет st."""
     seen = set(st.get("seen") or [])
     opened = st.setdefault("open", {})   # key → [box, at]: запощено, ещё не отвечено
     fresh, keys = [], set()
@@ -229,14 +238,14 @@ def tick(st, items, owner_last, now, put=post):
         keys.add(i["key"])
         fresh.append(i)
     for i in fresh:
-        done = bool(i.get("box")) and owner_last.get(i["box"], "") > i["at"]   # уже ответил — сразу отвеченным
+        done = (bool(i.get("box")) and owner_last.get(i["box"], "") > i["at"]) or i["key"] in reacted   # уже ответил
         put({"kind": "msg", "id": i["key"], "answered": done,
              **{k: i[k] for k in ("src", "where", "from", "text", "at", "link", "mention")}})
         st.setdefault("seen", []).append(i["key"])
         if i.get("box") and not done:
             opened[i["key"]] = [i["box"], i["at"]]
     for k, (box, at) in list(opened.items()):
-        if owner_last.get(box, "") > at:
+        if owner_last.get(box, "") > at or k in reacted:
             put({"kind": "answered", "id": k})
             del opened[k]
     st["seen"] = st.get("seen", [])[-SEEN_MAX:]
@@ -257,7 +266,7 @@ def main():
                      if last else now - FIRST_BACK)
         try:
             st["watch"] = choice.poll()
-            items, owner_last = reader.read(st, cutoff, st["watch"], now)
+            items, owner_last, reacted = reader.read(st, cutoff, st["watch"], now)
             st["watch_since"] = reader.next_since
         except Exception as e:   # noqa: BLE001 — процесс живёт дальше; сбой — плашкой во вкладке после FAIL_AFTER
             reader.close()
@@ -272,7 +281,7 @@ def main():
         if st.get("fails", 0) >= FAIL_AFTER:
             post({"kind": "status", "ok": True, "at": iso(now)})
         st["fails"] = 0
-        fresh = tick(st, items, owner_last, now)
+        fresh = tick(st, items, owner_last, now, reacted=reacted)
         if fresh:
             print(f"{iso(now)} teams: новых {len(fresh)}", file=sys.stderr, flush=True)
         save(st)

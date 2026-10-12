@@ -7,6 +7,7 @@
 .tm-logo { width: 22px; height: 22px; flex: none; align-self: center; }   /* лого Teams — только здесь, не в боковой панели (владелец 09.10) */
 .tm-title { margin: 0; font-size: var(--text-lg); font-weight: 650; }
 .tm-sub { color: var(--muted-foreground); font-size: var(--text-sm); }
+.tm-keep { margin: 0; color: var(--muted-foreground); font-size: var(--text-xs, 12px); }
 .tm-bar { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
 .tm-bulk { display: flex; align-items: center; gap: var(--space-2); margin-left: auto; }
 .tm-confirm { font-size: var(--text-sm); }

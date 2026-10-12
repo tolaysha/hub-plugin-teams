@@ -12,6 +12,13 @@ const AUTHOR = "плагин teams";   // так ядро подписывает
 const HUB = "hub";
 const SRC = { dm: "Личка", mention: "Упоминание", channel: "Канал" };
 const SRCS = { dm: "Личка", mention: "Упоминания", channel: "Каналы" };   // в фильтре
+// сколько держим во вкладке (владелец 12.10: «не понимаю когда чистятся старые сообщения»): разобранные — сутки,
+// неразобранные — неделю; старше — не показываем (в канале плагина они остаются, пока их не вытеснят новые посты)
+const DAY = 86400;
+const KEEP_NEW = 7 * DAY, KEEP_DONE = DAY;
+// карточки ботов (Workflows) — не сообщения людей (владелец 12.10: «из воркфлоу не надо показывать»); сборщик их
+// больше не постит, фильтр — для уже запощенных
+const BOTS = new Set(["Workflows", "Power Automate"]);
 let hub = null;
 const el = (...a) => hub.el(...a);
 
@@ -21,6 +28,7 @@ const hidden = new Set();
 const work = new Map();      // id → ts: передано хабу в работу
 const draft = new Map();     // id → ts: черновик запрошен
 const replies = new Map();   // номер поста сообщения → [{by, text, ts}] — черновики от сессий
+const doneAt = new Map();    // id → когда (с) сообщение разобрали: ответ, реакция, скрытие, «В работу» — от него сутки
 let status = null;           // {ok, error, at} — последнее, что сказал процесс о чтении Teams
 const dirs = new Map();      // sig → {of, parts: Map(part → items), default} — список каналов от процесса, частями
 let directory = null;        // последний целый: {items: [[ключ, команда, канал]], default: [ключ]}
@@ -33,6 +41,11 @@ let ui = null;
 
 const secs = (iso) => Date.parse(iso) / 1000;
 const done = (m) => hidden.has(m.id) || answered.has(m.id) || work.has(m.id);
+const kept = (m) => (done(m) ? Date.now() / 1000 - (doneAt.get(m.id) ?? secs(m.at)) < KEEP_DONE
+  : Date.now() / 1000 - secs(m.at) < KEEP_NEW);
+const settle = (id, ts) => doneAt.set(id, Math.max(doneAt.get(id) || 0, ts));
+const isNew = (m) => !done(m) && kept(m);
+const isDone = (m) => done(m) && kept(m);
 
 async function sync() {
   if (loading) return false;
@@ -43,22 +56,23 @@ async function sync() {
       since = Math.max(since, Number(p.id.slice(1)));
       let d = null;
       try { d = JSON.parse(p.text); } catch { /* не JSON — черновик текстом */ }
+      if (p.by === AUTHOR && d?.kind === "msg" && BOTS.has(d.from)) continue;
       if (p.by === AUTHOR && d?.kind === "msg") {
         // src "support" — так ранние версии сборщика звали выбранный канал и постили и ответы внутри треда (в where —
         // « · тред»): ответ без упоминания не показываем, только первое сообщение треда
         const reply = d.src === "support" && d.where?.includes(" · ");
         if (reply && !d.mention) continue;
         msgs.set(d.id, { ...d, ...(reply ? { src: "mention" } : d.src === "support" ? { src: "channel" } : {}), post: p.id });
-        if (d.answered) answered.add(d.id);
-      } else if (p.by === AUTHOR && d?.kind === "answered") answered.add(d.id);
+        if (d.answered) { answered.add(d.id); settle(d.id, p.ts); }
+      } else if (p.by === AUTHOR && d?.kind === "answered") { answered.add(d.id); settle(d.id, p.ts); }
       else if (p.by === AUTHOR && d?.kind === "status") status = d;
       else if (p.by === AUTHOR && d?.kind === "channels") addDir(d);
       // выбор каналов: пост владельца или эхо процесса — какие каналы он читает сейчас (переживает вытеснение из
       // канала: процесс постит его заново вместе со списком каналов)
       else if ((p.by === "owner" && d?.kind === "watch") || (p.by === AUTHOR && d?.kind === "watching")) watch = d.ids || [];
-      else if (p.by === "owner" && d?.kind === "hide") for (const id of d.ids || []) hidden.add(id);
+      else if (p.by === "owner" && d?.kind === "hide") for (const id of d.ids || []) { hidden.add(id); settle(id, p.ts); }
       else if (p.by === "owner" && d?.kind === "unhide") for (const id of d.ids || []) hidden.delete(id);
-      else if (p.by === "owner" && d?.kind === "work") work.set(d.id, p.ts);
+      else if (p.by === "owner" && d?.kind === "work") { work.set(d.id, p.ts); settle(d.id, p.ts); }
       else if (p.by === "owner" && d?.kind === "draft") draft.set(d.id, p.ts);
       else if (p.reply_to && p.by !== AUTHOR && p.by !== "owner") {
         replies.set(p.reply_to, [...(replies.get(p.reply_to) || []), { by: p.by, text: p.text, ts: p.ts }]);
@@ -87,7 +101,7 @@ const watching = () => watch ?? directory?.default ?? [];
 
 function list() {
   return [...msgs.values()]
-    .filter((m) => (tab === "new" ? !done(m) : done(m)) && (src === "all" || m.src === src))
+    .filter((m) => (tab === "new" ? isNew(m) : isDone(m)) && (src === "all" || m.src === src))
     .sort((a, b) => (a.at < b.at ? 1 : -1));
 }
 
@@ -148,6 +162,7 @@ async function toHub(m, kind) {
   const r = await hub.post("/api/send", { session: HUB, text });
   if (r.error) { sending.delete(m.id); error = r.error; paint(); return; }
   (kind === "work" ? work : draft).set(m.id, Date.now() / 1000);
+  if (kind === "work") settle(m.id, Date.now() / 1000);
   error = "";
   await mark(kind, { id: m.id });
   sending.delete(m.id);
@@ -156,7 +171,7 @@ async function toHub(m, kind) {
 }
 
 async function hide(ids, on) {
-  for (const id of ids) on ? hidden.add(id) : hidden.delete(id);
+  for (const id of ids) on ? (hidden.add(id), settle(id, Date.now() / 1000)) : hidden.delete(id);
   confirmAll = false;
   error = "";
   paint();
@@ -285,9 +300,8 @@ function seg(items, value, set, label) {
 
 function paint() {
   if (!ui) return;
-  const open = (m) => !done(m);
-  const pool = (m) => (tab === "new" ? open(m) : done(m));
-  ui.tabs.replaceChildren(seg([["new", `Новые ${count(open)}`], ["done", `Разобранные ${count(done)}`]],
+  const pool = (m) => (tab === "new" ? isNew(m) : isDone(m));
+  ui.tabs.replaceChildren(seg([["new", `Новые ${count(isNew)}`], ["done", `Разобранные ${count(isDone)}`]],
     tab, (v) => { tab = v; dmPerson = null; }, "Какие сообщения показать"));
   ui.srcs.replaceChildren(seg([["all", "Все"], ...Object.entries(SRCS).map(([k, t]) => [k, `${t} ${count((m) => pool(m) && m.src === k)}`])],
     src, (v) => { src = v; dmPerson = null; }, "Откуда"));
@@ -306,6 +320,9 @@ function paint() {
   const names = new Map((directory?.items || []).map(([k, t, c]) => [k, `${t} › ${c}`]));
   const watched = watching().map((k) => names.get(k)).filter(Boolean);
   ui.sub.textContent = `личка, упоминания${watched.length ? ` и ${watched.length === 1 ? "канал" : "каналы"} ${watched.join(", ")}` : ""} · проверка раз в минуту`;
+  ui.keep.textContent = tab === "new"
+    ? "Новые старше недели убираются сами. Ответили в Teams или поставили реакцию — сообщение уходит в «Разобранные»."
+    : "Разобранные хранятся сутки, потом убираются сами.";
   ui.pick.textContent = `Выбрать каналы · ${watching().length}`;
   ui.pick.setAttribute("aria-expanded", String(!!picking));
   ui.panel.hidden = !picking;
@@ -326,7 +343,7 @@ function paint() {
   else if (!items.length) {
     ui.list.replaceChildren(el("p", "tm-empty", tab === "new"
       ? (msgs.size ? "Новых сообщений нет. Разобранные — во вкладке рядом." : "Пока пусто. Первое чтение Teams — в течение минуты после запуска.")
-      : "Здесь будут скрытые, отвеченные и переданные хабу сообщения."));
+      : "Здесь будут скрытые, отвеченные и переданные хабу сообщения за последние сутки."));
   } else if (grouped && dmPerson) {
     const back = el("button", "btn small quiet tm-back", "← Все люди");
     back.type = "button";
@@ -424,24 +441,33 @@ function build(root) {
   panelNode.hidden = true;
   const alerts = el("div", "tm-alerts");
   alerts.setAttribute("role", "status");
-  head.append(title, bar, panelNode, alerts);
+  const keep = el("p", "tm-keep");
+  head.append(title, bar, keep, panelNode, alerts);
   const listNode = el("div", "tm-list");
   wrap.append(head, listNode);
   root.replaceChildren(wrap);
-  ui = { root, list: listNode, tabs, srcs, bulk, alerts, sub, pick, panel: panelNode };
+  ui = { root, list: listNode, tabs, srcs, bulk, alerts, sub, pick, panel: panelNode, keep };
 }
 
-// пункт в боковой панели — значок как был (владелец 09.10: «в панели слева остался текущий», логотип Teams —
-// только внутри самой вкладки), «Тимс», подпись и число новых — пилюлей, как у «Исполнители N» (sidebar.js:
-// countBadge/.gcount). addView своего же плагина с тем же id — обновление записи, не новая (ext.js:addView), так
-// что звать её заново на каждом render — безопасно и дёшево
+// пункт в боковой панели: значок плагина, «Тимс», в подписи — число новых (владелец 12.10: «не работает индикатор
+// новых сообщений на вкладке»). Поля badge у вида в API плагинов нет — число идёт подписью. addView своего же плагина с
+// тем же id — обновление записи (ext.js:addView), звать заново — безопасно.
+const SUBTITLE = "Сообщения, каналы, упоминания";
+let shownCount = -1;
+
+function plural(n) {
+  const t = n % 10, h = n % 100;
+  return t === 1 && h !== 11 ? "новое" : "новых";
+}
+
 function registerView() {
+  const n = loaded ? count(isNew) : 0;
+  shownCount = n;
   hub.addView({
     id: "teams",
     title: "Тимс",
-    subtitle: "Сообщения, каналы, упоминания",
+    subtitle: n ? `${n} ${plural(n)} · ${SUBTITLE.toLowerCase()}` : SUBTITLE,
     icon: "web/icon.svg",
-    badge: count((m) => !done(m)),
     full: true,
     async render(root, snap) {
       if (!ui || ui.root !== root) { build(root); paint(); }
@@ -450,13 +476,33 @@ function registerView() {
         const first = !loaded;
         if ((await sync()) || first) paint();
       }
-      registerView();   // число новых могло поменяться — обновить бейдж в боковой панели
+      badge();
     },
   });
+}
+
+// число новых в боковой панели — и когда вкладка закрыта: render вида зовётся, только пока он открыт, поэтому канал
+// читаем сами, когда в снимке есть новые посты (snap.feeds.teams — номер последнего); раз в минуту — пересчёт, чтобы
+// число не врало, когда сообщения стареют
+function badge() {
+  if (loaded && count(isNew) !== shownCount) {
+    registerView();
+    hub.redraw();
+  }
+}
+
+async function poll() {
+  const last = hub.snapshot()?.feeds?.teams || 0;
+  if (!loaded || last > since) {
+    if (await sync()) paint();
+  }
+  badge();
 }
 
 export default function register(h) {
   hub = h;
   hub.addStyle("web/teams.css");
   registerView();
+  poll();
+  setInterval(poll, 5000);
 }

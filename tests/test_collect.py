@@ -17,8 +17,9 @@ ME = "me"
 CUT = "2026-10-09T10:00:00Z"
 
 
-def msg(mid, at, who, text, mentions=(), attachments=(), deleted=False):
-    return {"id": mid, "createdDateTime": at, "messageType": "message", "deletedDateTime": "x" if deleted else None,
+def msg(mid, at, who, text, mentions=(), attachments=(), deleted=False, reacted_by=()):
+    return {"reactions": [{"reactionType": "👍", "user": {"user": {"id": u}}} for u in reacted_by],
+            "id": mid, "createdDateTime": at, "messageType": "message", "deletedDateTime": "x" if deleted else None,
             "from": {"user": {"id": who, "displayName": who.title()}} if who else None,
             "body": {"content": text}, "webUrl": f"https://t/{mid}",
             "mentions": [{"mentioned": {"user": {"id": u}}} for u in mentions], "attachments": list(attachments)}
@@ -65,6 +66,36 @@ class Chats(unittest.TestCase):
         self.assertEqual(last[collect.key("d", "")], "2026-10-09T10:02:00Z")
 
 
+    def test_owner_reaction_is_an_answer(self):
+        # владелец 12.10: поставил реакцию — сообщение разобрано, как ответ
+        fake = Fake([chat("d", "oneOnOne", "2026-10-09T10:05:00Z")],
+                    {"d": [msg("1", "2026-10-09T10:01:00Z", "alex", "глянь MR", reacted_by=[ME]),
+                           msg("2", "2026-10-09T10:02:00Z", "alex", "и ещё вопрос", reacted_by=["kate"])]})
+        reacted = set()
+        out = collect.chats(fake, CUT, ME, {}, reacted=reacted)
+        self.assertEqual([i["text"] for i in out], ["глянь MR", "и ещё вопрос"])
+        self.assertEqual(reacted, {collect.key("d", "1")})
+
+    def test_chatter_is_not_a_message(self):
+        # владелец 12.10: «не надо реакции на сообщения показывать как сообщения» — смех, эмодзи, «ок» в личке
+        texts = ["ахахх)", "ахах)", "))", "👍", "ок", "Спасибо!", "<p>&nbsp;</p>", "да", "лол 😂"]
+        keep = ["да, сделаю завтра", "ок, а что с MR?", "100% )"]
+        fake = Fake([chat("d", "oneOnOne", "2026-10-09T10:05:00Z")],
+                    {"d": [msg(str(i), "2026-10-09T10:01:00Z", "alex", t) for i, t in enumerate(texts + keep)]})
+        self.assertEqual([i["text"] for i in collect.chats(fake, CUT, ME, {})], keep)
+
+    def test_older_chats_rechecked_for_answers_without_old_messages(self):
+        # реакция или ответ владельца в чате, где новых сообщений нет: читаем чат при перепроверке (scan), но старое
+        # сообщение новым не становится
+        fake = Fake([chat("d", "oneOnOne", "2026-10-09T08:00:00Z")],
+                    {"d": [msg("1", "2026-10-09T08:00:00Z", "alex", "вопрос", reacted_by=[ME])]})
+        reacted, last = set(), {}
+        self.assertEqual(collect.chats(fake, CUT, ME, last, reacted=reacted), [])
+        self.assertEqual(reacted, set())
+        self.assertEqual(collect.chats(fake, CUT, ME, last, reacted=reacted, scan="2026-10-08T10:00:00Z"), [])
+        self.assertEqual(reacted, {collect.key("d", "1")})
+
+
 class ChannelPosts(unittest.TestCase):
     def test_only_thread_root_replies_only_when_mentioning_owner(self):
         # владелец 09.10: «из саппорта только первое сообщение… сообщения внутри поста не надо»
@@ -85,13 +116,17 @@ class ChannelPosts(unittest.TestCase):
 
 class Mentions(unittest.TestCase):
     def test_channel_hits_with_name_in_text_only(self):
-        def hit(mid, chan, who, summary, at="2026-10-09T10:01:00Z"):
+        def hit(mid, chan, who, summary, at="2026-10-09T10:01:00Z", team="t", address=None):
             return {"summary": summary, "resource": {"id": mid, "createdDateTime": at, "webLink": "l",
-                    "channelIdentity": {"channelId": chan} if chan else None,
-                    "from": {"emailAddress": {"name": who, "address": f"{who}@x"}}}}
+                    "channelIdentity": {"channelId": chan, **({"teamId": team} if team else {})} if chan else None,
+                    "from": {"emailAddress": {"name": who, "address": address or f"{who}@x"}}}}
         hits = [hit("1", "c1", "alex", "<c0>Owner</c0> посмотри"), hit("2", "c1", "alex", "без имени"),
                 hit("3", None, "alex", "Owner в чате"), hit("4", "sup", "alex", "Owner в Support"),
-                hit("5", "c1", "me", "Owner сам"), hit("6", "c1", "alex", "Owner", at="2026-10-09T09:00:00Z")]
+                hit("5", "c1", "me", "Owner сам"), hit("6", "c1", "alex", "Owner", at="2026-10-09T09:00:00Z"),
+                # владелец 12.10: «из воркфлоу не надо» — карточки бота Workflows; у чата в поиске тоже есть
+                # channelId (это id чата), но нет teamId — чаты читает chats()
+                hit("7", "c1", "Workflows", "..., Owner ...", address="Workflows@teams.microsoft.com"),
+                hit("8", "19:a_b@unq.gbl.spaces", "alex", "Owner в личке", team=None)]
         out = collect.channel_mentions(Fake(hits=hits), CUT, "me@x", "Owner",
                                        {"c1": {"team": "Dev", "channel": "Backend", "teamId": "t"}}, skip={"sup"})
         self.assertEqual([(i["text"], i["where"]) for i in out], [("Owner посмотри", "Dev › Backend")])
@@ -116,6 +151,15 @@ class Tick(unittest.TestCase):
         main.tick(st, [self.item("k2", "2026-10-09T10:01:00Z")], {"b": "2026-10-09T10:02:00Z"},
                   datetime(2026, 10, 9, 11, tzinfo=timezone.utc), out.append)
         self.assertEqual([(p["kind"], p["answered"]) for p in out], [("msg", True)])
+
+    def test_reaction_answers_new_and_open_messages(self):
+        st, out, now = {}, [], datetime(2026, 10, 9, 11, tzinfo=timezone.utc)
+        main.tick(st, [self.item("k1", "2026-10-09T10:01:00Z"), self.item("k2", "2026-10-09T10:02:00Z")], {}, now,
+                  out.append, reacted={"k2"})
+        self.assertEqual([(p["id"], p["answered"]) for p in out], [("k1", False), ("k2", True)])
+        main.tick(st, [], {}, now, out.append, reacted={"k1"})
+        self.assertEqual([(p["kind"], p["id"]) for p in out[2:]], [("answered", "k1")])
+        self.assertEqual(st["open"], {})
 
 
 
@@ -146,6 +190,29 @@ class Channels(unittest.TestCase):
         _, posts = main.directory_posts(ch, [])
         self.assertTrue(all(len(main.json.dumps(p, ensure_ascii=False)) <= main.POST_MAX for p in posts))
         self.assertEqual(sum(len(p["items"]) for p in posts), 60)
+
+    def test_directory_not_reposted_on_every_restart(self):
+        # канал хранит 500 постов: список каналов на каждом перезапуске хаба вытеснял сообщения
+        class Dir:
+            def call(self, tool, args):
+                return {"value": [{"id": "t1", "displayName": "Company"}]} if tool == "list-joined-teams" else \
+                    {"value": [{"id": "c1", "displayName": "Support"}]}
+        st, out = {}, []
+        r = main.Reader()
+        r.mcp = Dir()
+        r.refresh(st, ["k"], out.append)
+        self.assertEqual([p["kind"] for p in out], ["channels", "watching"])
+        r2 = main.Reader()   # перезапуск: то же состояние, тот же список и выбор — не постим
+        r2.mcp = Dir()
+        r2.refresh(st, ["k"], out.append)
+        self.assertEqual(len(out), 2)
+        r2.refresh(st, ["k", "m"], out.append)   # выбор поменялся — постим
+        self.assertEqual(len(out), 4)
+        st["dir_at"] -= main.DIR_EVERY   # давно — постим заново (старый список вытеснен из канала)
+        r3 = main.Reader()
+        r3.mcp = Dir()
+        r3.refresh(st, ["k", "m"], out.append)
+        self.assertEqual(len(out), 6)
 
     def test_watched_is_owner_choice_or_default(self):
         r = main.Reader()
