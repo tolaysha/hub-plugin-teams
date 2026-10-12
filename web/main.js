@@ -24,6 +24,8 @@ const hidden = new Set();
 const work = new Map();      // id → ts: передано хабу в работу
 const draft = new Map();     // id → ts: черновик запрошен
 const replies = new Map();   // номер поста сообщения → [{by, text, ts}] — черновики от сессий
+let signature = "";         // подпись под черновиками хаба — настройка плагина (пост config), задаётся в приложениях
+const signed = (text) => (!signature || text.trim().endsWith(signature) ? text.trim() : `${text.trim()}\n\n${signature}`);
 const sends = new Map();     // rid → {id, text, ts, state: "wait"|"ok"|"fail", error} — ответы владельца из вкладки
 const composing = new Map(); // id сообщения → {text} — открытое поле ответа (текст переживает перерисовку)
 const replyOk = new Set();   // id сообщений, запощенных до «Ответить»: процесс дописал им адрес ответа (пост reply)
@@ -78,6 +80,9 @@ async function sync() {
       else if (p.by === "owner" && d?.kind === "draft") draft.set(d.id, p.ts);
       else if (p.by === "owner" && d?.kind === "send" && d.rid) sends.set(d.rid, { ...(sends.get(d.rid) || {}), id: d.id, text: d.text, ts: p.ts, state: sends.get(d.rid)?.state || "wait" });
       else if (p.by === AUTHOR && d?.kind === "sent" && d.rid) { const x = sends.get(d.rid) || {}; sends.set(d.rid, { ...x, id: d.id, state: "ok" }); answered.add(d.id); }
+      else if (p.by === AUTHOR && d?.kind === "scheduled" && d.rid) sends.set(d.rid, { ...(sends.get(d.rid) || {}), id: d.id, state: "later", at: d.at });
+      else if (p.by === AUTHOR && d?.kind === "canceled" && d.rid) sends.delete(d.rid);
+      else if (p.by === AUTHOR && d?.kind === "config") signature = String(d.signature || "").trim();
       else if (p.by === AUTHOR && d?.kind === "send_failed" && d.rid) sends.set(d.rid, { ...(sends.get(d.rid) || {}), id: d.id, state: "fail", error: d.error || "ошибка" });
       else if (p.reply_to && p.by !== AUTHOR && p.by !== "owner") {
         replies.set(p.reply_to, [...(replies.get(p.reply_to) || []), { by: p.by, text: p.text, ts: p.ts }]);
@@ -316,11 +321,11 @@ function draftBlock(m, r) {
   const by = el("div", "tm-draft-by", `Черновик ответа · ${r.by} · `);
   by.append(stamp(r.ts));
   d.append(by, el("div", "tm-draft-text", r.text));
-  const mine = [...sends.values()].filter((x) => x.id === m.id && x.text === r.text.trim());
+  const mine = [...sends.values()].filter((x) => x.id === m.id && (x.text === r.text.trim() || x.text === signed(r.text)));
   if (canReply(m) && !mine.some((x) => x.state !== "fail")) {
     const a = el("div", "tm-acts");
-    a.append(button("Отправить", "primary", () => sendReply(m, r.text), `Отправить черновик: ${m.from}`),
-      button("Править", "", () => openCompose(m, r.text), `Править черновик: ${m.from}`));
+    a.append(button("Отправить", "primary", () => sendReply(m, signed(r.text)), `Отправить черновик: ${m.from}`),
+      button("Править", "", () => openCompose(m, signed(r.text)), `Править черновик: ${m.from}`));
     d.append(a);
   }
   return d;
@@ -330,6 +335,7 @@ function sentBlock(m, rid, x) {
   const d = el("div", "tm-mine tm-mine-" + x.state);
   const late = x.state === "wait" && Date.now() / 1000 - x.ts > WAIT_MAX;
   const stateText = x.state === "ok" ? "отправлено" : x.state === "fail" ? `не отправлено: ${x.error}`
+    : x.state === "later" ? `отправится ${new Date(x.at).toLocaleString("ru", { day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" })}`
     : late ? "плагин не ответил — проверьте, что он запущен" : "отправляю…";
   const by = el("div", "tm-draft-by", "Вы · ");
   by.append(stamp(x.ts), ` · ${stateText}`);
