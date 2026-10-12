@@ -430,14 +430,18 @@ function paint() {
   focusId = null;
 }
 
+// число рядом с названием — только когда оно не ноль («0» ничего не говорит)
+const withN = (t, n, sep = " ") => (n ? `${t}${sep}${n}` : t);
+
 function paintAll() {
   const open = (m) => !done(m);
   const pool = (m) => (tab === "new" ? open(m) : done(m));
-  ui.tabs.replaceChildren(seg([["new", `Новые ${count(open)}`], ["done", `Разобранные ${count(done)}`]],
+  ui.tabs.replaceChildren(seg([["new", withN("Новые", count(open))], ["done", withN("Разобранные", count(done))]],
     tab, (v) => { tab = v; dmPerson = null; }, "Какие сообщения показать"));
   const active = new Set([...msgs.values()].map((m) => m.src));
   const on = (k) => TEAMS_SRCS.includes(k) || active.has(k) || statuses.has(k);
-  ui.srcs.replaceChildren(seg([["all", "Все"], ...Object.entries(SRCS).filter(([k]) => on(k)).map(([k, t]) => [k, `${t} ${count((m) => pool(m) && m.src === k)}`])],
+  ui.srcs.replaceChildren(seg([["all", "Все"], ...Object.entries(SRCS).filter(([k]) => on(k))
+    .map(([k, t]) => [k, t, count((m) => pool(m) && m.src === k)]).filter(([k, , n]) => n || k === src).map(([k, t, n]) => [k, withN(t, n)])],
     src, (v) => { src = v; dmPerson = null; }, "Откуда"));
 
   const items = list();
@@ -451,11 +455,7 @@ function paintAll() {
     }
   }
 
-  const names = new Map((directory?.items || []).map(([k, t, c]) => [k, `${t} › ${c}`]));
-  const watched = watching().map((k) => names.get(k)).filter(Boolean);
-  const more = ["whatsapp", "email"].filter((k) => on(k)).map((k) => SRC[k].toLowerCase());
-  ui.sub.textContent = `личка, упоминания${watched.length ? ` и ${watched.length === 1 ? "канал" : "каналы"} ${watched.join(", ")}` : ""}${more.length ? `, ${more.join(", ")}` : ""} · только то, что ждёт ответа`;
-  ui.pick.textContent = `Выбрать каналы · ${watching().length}`;
+  ui.pick.textContent = withN("Выбрать каналы", watching().length, " · ");
   ui.pick.setAttribute("aria-expanded", String(!!picking));
   ui.panel.hidden = !picking;
   if (picking && ui.panel.dataset.sig !== String(directory ? directory.items.length + ":" + directory.items[0]?.[0] : "")) panel();
@@ -564,10 +564,9 @@ function build(root) {
   const wrap = el("div", "tm");
   const head = el("header", "tm-top");
   const title = el("div", "tm-title-row");
-  const sub = el("span", "tm-sub");
-  title.append(el("h2", "tm-title", "Inbox"), sub);   // логотип Teams убран: здесь и WhatsApp, и почта (владелец 10.10)
+  title.append(el("h2", "tm-title", "Inbox"));   // логотип Teams убран: здесь и WhatsApp, и почта (владелец 10.10)
   const bar = el("div", "tm-bar");
-  const tabs = el("div"), srcs = el("div"), bulk = el("div", "tm-bulk");
+  const tabs = el("div"), srcs = el("div", "tm-srcs"), bulk = el("div", "tm-bulk");
   const pick = button("Выбрать каналы", "", openPicker);
   pick.setAttribute("aria-controls", "tm-panel");
   bar.append(tabs, srcs, pick, bulk);
@@ -580,7 +579,7 @@ function build(root) {
   const listNode = el("div", "tm-list");
   wrap.append(head, listNode);
   root.replaceChildren(wrap);
-  ui = { root, list: listNode, tabs, srcs, bulk, alerts, sub, pick, panel: panelNode };
+  ui = { root, list: listNode, tabs, srcs, bulk, alerts, pick, panel: panelNode };
 }
 
 // пункт в боковой панели — значок как был (владелец 09.10: «в панели слева остался текущий», логотип Teams —

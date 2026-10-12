@@ -6,7 +6,6 @@
 .tm-title-row { display: flex; align-items: baseline; gap: var(--space-3); flex-wrap: wrap; }
 .tm-logo { width: 22px; height: 22px; flex: none; align-self: center; }   /* лого Teams — только здесь, не в боковой панели (владелец 09.10) */
 .tm-title { margin: 0; font-size: var(--text-lg); font-weight: 650; }
-.tm-sub { color: var(--muted-foreground); font-size: var(--text-sm); }
 .tm-bar { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
 .tm-bulk { display: flex; align-items: center; gap: var(--space-2); margin-left: auto; }
 .tm-confirm { font-size: var(--text-sm); }
@@ -93,3 +92,11 @@
 .tm, .tm-top, .tm-list { min-width: 0; }   /* .tm — элемент grid вида: без этого на телефоне шире экрана */
 .tm-card { max-width: 100%; box-sizing: border-box; }
 .tm-draft .tm-acts, .tm-mine .tm-acts { margin-top: var(--space-2); }
+.tm-bar .seg button { white-space: nowrap; }
+@media (max-width: 760px) {
+  .tm-top { padding: var(--space-3) var(--space-4); gap: var(--space-2); }
+  .tm-srcs { order: 3; flex-basis: 100%; }   /* вкладки и «Выбрать каналы» — в одной строке, источники — под ними */
+  .tm-bulk { order: 4; margin-left: 0; }
+}
+/* внутри приложения заголовок раздела рисует само приложение */
+[data-app] .tm-title-row { display: none; }
