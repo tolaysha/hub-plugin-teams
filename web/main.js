@@ -449,9 +449,9 @@ function build(root) {
   ui = { root, list: listNode, tabs, srcs, bulk, alerts, sub, pick, panel: panelNode, keep };
 }
 
-// пункт в боковой панели: значок плагина, «Тимс», в подписи — число новых (владелец 12.10: «не работает индикатор
-// новых сообщений на вкладке»). Поля badge у вида в API плагинов нет — число идёт подписью. addView своего же плагина с
-// тем же id — обновление записи (ext.js:addView), звать заново — безопасно.
+// пункт в боковой панели: значок плагина, «Тимс» и число новых (владелец 12.10: «не работает индикатор новых
+// сообщений на вкладке»). С API 1.14 число — badge справа у пункта, как у «Исполнители N»; на хабе старше — в
+// подписи. addView своего же плагина с тем же id — обновление записи (ext.js:addView), звать заново — безопасно.
 const SUBTITLE = "Сообщения, каналы, упоминания";
 let shownCount = -1;
 
@@ -460,13 +460,19 @@ function plural(n) {
   return t === 1 && h !== 11 ? "новое" : "новых";
 }
 
+function hasBadge() {
+  const [maj, min] = String(hub.snapshot()?.plugin_api || hub.api || "").split(".").map(Number);
+  return maj > 1 || (maj === 1 && min >= 14);
+}
+
 function registerView() {
   const n = loaded ? count(isNew) : 0;
   shownCount = n;
   hub.addView({
     id: "teams",
     title: "Тимс",
-    subtitle: n ? `${n} ${plural(n)} · ${SUBTITLE.toLowerCase()}` : SUBTITLE,
+    subtitle: n && !hasBadge() ? `${n} ${plural(n)} · ${SUBTITLE.toLowerCase()}` : SUBTITLE,
+    badge: n,
     icon: "web/icon.svg",
     full: true,
     async render(root, snap) {
