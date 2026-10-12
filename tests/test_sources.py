@@ -212,6 +212,17 @@ class Flow(unittest.TestCase):
         self.assertIn({"kind": "answered", "id": "k2"}, posts)   # переписка прочитана/отвечена
 
 
+class PersonName(unittest.TestCase):
+    def test_timezone_is_dropped_from_the_name(self):
+        """12.10: «Anthony Minkowski [UTC-03:00]» в Inbox — часовой пояс из имени в Telegram не показываем."""
+        import collect
+        for raw in ("Anthony Minkowski [UTC-03:00]", "Anthony Minkowski (GMT+3)", "Anthony Minkowski [UTC\u221203]"):
+            self.assertEqual(collect.person(raw), "Anthony Minkowski", raw)
+        self.assertEqual(collect.person("Ana [UTC] Gomez"), "Ana [UTC] Gomez")
+        self.assertEqual(collect.person("[UTC-03:00]"), "[UTC-03:00]")   # пустым имя не делаем
+        self.assertEqual(collect.person(""), "")
+
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -34,6 +34,15 @@ def plain(body):
     return s if len(s) <= TEXT_MAX else s[:TEXT_MAX].rstrip() + "…"
 
 
+_TZ = re.compile(r"\s*[\[(]\s*(?:UTC|GMT)\s*[+\-\u2212]\s*\d{1,2}(?::?\d{2})?\s*[\])]\s*")
+
+
+def person(name):
+    """Имя человека без часового пояса: «Anthony Minkowski [UTC-03:00]» → «Anthony Minkowski» (12.10)."""
+    s = _TZ.sub(" ", name or "").strip()
+    return s or (name or "")
+
+
 def sender(m):
     return ((m.get("from") or {}).get("user") or {})
 

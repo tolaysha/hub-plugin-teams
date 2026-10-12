@@ -293,7 +293,8 @@ def tick(st, items, owner_last, now, put=post):
     opened = st.setdefault("open", {})   # key → [box, at]: запощено, ещё не отвечено
     fresh, keys = [], set()
     muted = st.get("ignored") or {}
-    for i in sorted(items, key=lambda i: i["at"]):
+    for i in sorted((({**i, "from": collect.person(i["from"])} if i.get("from") else i) for i in items),
+                    key=lambda i: i["at"]):
         if contact(i) in muted:   # «Не показывать»: ни карточки, ни черновика; помечаем виденным — не вернётся
             if i["key"] not in seen:
                 st.setdefault("seen", []).append(i["key"])
@@ -535,7 +536,7 @@ def history(st, reader, q, put=post, now=None):
     parts, cur, size = [], [], 0
     for it in items:
         it = {**it, "text": it["text"] if len(it["text"]) <= HISTORY_TEXT else it["text"][:HISTORY_TEXT].rstrip() + "…",
-              "from": it["from"][:60]}
+              "from": collect.person(it["from"])[:60]}
         n = len(json.dumps(it, ensure_ascii=False)) + 2
         if cur and size + n > 1600:
             parts.append(cur)
