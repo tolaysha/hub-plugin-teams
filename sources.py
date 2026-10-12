@@ -343,13 +343,87 @@ def telegram(cfg, now):
     return items, boxes, []
 
 
+# --- тело письма (12.10: «показана только тема — нет тела письма»), без цитат предыдущих писем --------------------
+_QUOTE = re.compile(r"(?im)^(?:>.*|(?:on|el|em|am|le) .{3,200}(?:wrote|escribi[oó]|escreveu|schrieb|a [eé]crit).{0,60}:?\s*|"
+                    r".{0,160}(?:написал[аи]?|писал[аи]?):\s*|"
+                    r"-{2,}\s*(?:original|forwarded|mensaje reenviado|пересланное).*|_{5,}\s*)$")
+_BODIES = {}
+
+
+def _decode(data):
+    import base64
+    try:
+        return base64.urlsafe_b64decode(str(data) + "=" * (-len(str(data)) % 4)).decode("utf-8", "replace")
+    except (ValueError, TypeError):
+        return ""
+
+
+def message_text(payload):
+    """Текст письма из payload Gmail: text/plain, иначе text/html без разметки; цитаты и подписи-хвосты обрезаны."""
+    plain, html_ = [], []
+
+    def walk(p):
+        mt = (p.get("mimeType") or "").lower()
+        data = (p.get("body") or {}).get("data")
+        if data and mt == "text/plain":
+            plain.append(_decode(data))
+        elif data and mt == "text/html":
+            html_.append(_decode(data))
+        for c in p.get("parts") or []:
+            walk(c)
+    walk(payload or {})
+    text = "\n".join(plain)
+    if not text.strip() and html_:
+        import html as H
+        h = re.sub(r"(?is)<(script|style).*?</\1>", " ", "\n".join(html_))
+        h = re.sub(r"(?i)<br\s*/?>|</p>|</div>|</tr>|</li>", "\n", h)
+        text = H.unescape(re.sub(r"<[^>]+>", " ", h))
+    lines = []
+    for ln in text.replace("\r", "").split("\n"):
+        if _QUOTE.match(ln.strip()):
+            if ln.strip().startswith(">"):
+                continue
+            if re.match(r"(?i)(?:-{2,}\s*(?:forwarded|mensaje reenviado|пересланное|original)|_{5,})", ln.strip()) \
+                    and len(re.sub(r"(?i)obtener outlook.*|sent from.*|enviado desde.*", "", " ".join(lines)).strip()) < 40:
+                continue   # «Fw:» без своих слов — само пересланное и есть содержание письма
+            break   # «El … escribió:» — дальше только цитата
+        lines.append(" ".join(ln.split()))
+    out = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+    return out
+
+
+def mail_thread(cmd, acct, thread_id, count):
+    """Письма цепочки [{from, at, me, text}] с телом; кеш на (цепочка, число писем)."""
+    key = (acct, thread_id, count)
+    if key in _BODIES:
+        return _BODIES[key]
+    data = json.loads(run([cmd, "gmail", "thread", "get", thread_id, "-a", acct, "-j"]))
+    out = []
+    for m in (data.get("thread") or {}).get("messages") or []:
+        heads = {h.get("name", "").lower(): h.get("value", "") for h in (m.get("payload") or {}).get("headers") or []}
+        try:
+            at = iso_utc(datetime.fromtimestamp(int(m.get("internalDate") or 0) / 1000, timezone.utc))
+        except (ValueError, OSError):
+            at = ""
+        out.append({"at": at, "from": re.sub(r"\s*<[^>]*>\s*$", "", heads.get("from", "")).strip().strip('"'),
+                    "me": "SENT" in (m.get("labelIds") or []), "text": message_text(m.get("payload")) or (m.get("snippet") or "").strip(),
+                    "subject": heads.get("subject", "")})
+    if len(_BODIES) > 200:
+        _BODIES.clear()
+    _BODIES[key] = out
+    return out
+
+
+URL = re.compile(r"https?://[^\s<>\"')\]]+")
+
+
 # --- Почта: Gmail через gogx — непрочитанные входящие вне рассылок; тема и отправитель ----------------------------
 @source("email", every=120)
 def email(cfg, now):
     cmd = expand(cfg.get("cmd") or "~/.claude/bin/gogx")
     query = cfg.get("query") or ("is:unread in:inbox newer_than:7d -category:promotions -category:social "
                                  "-category:forums")
-    items, boxes, errors, ok = [], set(), [], 0
+    items, boxes, errors, ok, fetched = [], set(), [], 0, 0
     for acct in cfg.get("accounts") or []:
         try:
             data = json.loads(run([cmd, "gmail", "search", query, "--max", "40", "-a", acct, "-j"]))
@@ -374,9 +448,20 @@ def email(cfg, now):
             box = f"mail:{acct}:{th['id']}"
             boxes.add(box)
             name = re.sub(r"\s*<[^>]*>\s*$", "", sender).strip().strip('"') or (addr.group(1) if addr else "")
+            body = ""
+            if fetched < 15:   # тело нового письма — не только тема (владелец 12.10); цепочки без нового кешируются
+                fetched += 1
+                try:
+                    msgs = [m for m in mail_thread(cmd, acct, th["id"], th.get("messageCount")) if not m["me"]]
+                    body = (msgs[-1]["text"] if msgs else "")[:1000]
+                except (OSError, ValueError, subprocess.TimeoutExpired):
+                    body = ""
+            links = [{"url": u.rstrip(".,;")} for u in dict.fromkeys(URL.findall(body))
+                     if not re.search(r"(?i)\.(png|gif|jpe?g)(\?|$)|gstatic\.com|aka\.ms/", u)][:3]
             items.append({"key": f"{box}:{th.get('date')}:{th.get('messageCount')}", "box": box, "src": "email",
                           "tier": t, "where": "Почта" + (f" · {acct}" if len(cfg.get("accounts") or []) > 1 else ""),
-                          "from": name or "—", "text": subject or "(без темы)", "at": at,
+                          "from": name or "—", "text": (subject or "(без темы)") + (f"\n\n{body}" if body else ""),
+                          "at": at, **({"links": links} if links else {}),
                           "link": f"https://mail.google.com/mail/u/{acct}/#inbox/{th['id']}", "mention": False,
                           "contact": f"mail:{(addr.group(1) if addr else sender).lower()}",
                           "ref": {"mail": acct, "thread": th["id"], "subject": subject, "cmd": cmd}})
@@ -488,16 +573,7 @@ def history(ref, top=20):
             out.append(e)
         return out
     if ref.get("mail"):
-        data = json.loads(run([ref["cmd"], "gmail", "thread", "get", ref["thread"], "-a", ref["mail"], "-j"]))
-        out = []
-        for m in (data.get("thread") or {}).get("messages") or []:
-            heads = {h.get("name", "").lower(): h.get("value", "") for h in (m.get("payload") or {}).get("headers") or []}
-            try:
-                at = iso_utc(datetime.fromtimestamp(int(m.get("internalDate") or 0) / 1000, timezone.utc))
-            except (ValueError, OSError):
-                at = ""
-            name = re.sub(r"\s*<[^>]*>\s*$", "", heads.get("from", "")).strip().strip('"')
-            out.append({"at": at, "from": name, "me": "SENT" in (m.get("labelIds") or []),
-                        "text": (m.get("snippet") or "").strip() or heads.get("subject", "")})
+        out = [{"at": m["at"], "from": m["from"], "me": m["me"], "text": m["text"] or m.get("subject", "")}
+               for m in mail_thread(ref["cmd"], ref["mail"], ref["thread"], None)]
         return out[-top:]
     return []

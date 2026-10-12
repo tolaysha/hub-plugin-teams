@@ -263,6 +263,36 @@ class Media(unittest.TestCase):
         self.assertEqual(sources.tg_reply_text({"reply": {"id": "9"}}, by), {"id": "9"})
 
 
+class Context(unittest.TestCase):
+    def test_mail_body_is_taken_without_quotes(self):
+        """12.10: у письма показана только тема — нет тела; цитата предыдущего письма в тело не входит."""
+        import base64
+        raw = "Hola, aca esta el zip: https://drive.google.com/x\n\nEl lun, 12 oct 2026 escribio Ivan:\n> hola\n"
+        p = {"mimeType": "text/plain", "body": {"data": base64.urlsafe_b64encode(raw.encode()).decode()}}
+        self.assertEqual(sources.message_text(p), "Hola, aca esta el zip: https://drive.google.com/x")
+
+    def test_same_person_in_another_source_is_linked(self):
+        """12.10: Пабло написал в WhatsApp и за 5 минут письмом — читаются вместе."""
+        mail = {"key": "m", "src": "email", "from": "pablo farias", "at": "2026-10-12T17:05:00Z", "text": "Fw: Fotos"}
+        wa = {"key": "w", "src": "whatsapp", "from": "Pablo Electricista Tramite 3-fasico", "at": "2026-10-12T17:00:00Z",
+              "text": "pasame el email"}
+        other = {"key": "o", "src": "whatsapp", "from": "Gabriel", "at": "2026-10-12T17:00:00Z", "text": "x"}
+        got = main.also(mail, [mail, wa, other])
+        self.assertEqual([g["id"] for g in got], ["w"])
+        self.assertEqual(main.also({**mail, "at": "2026-10-14T17:05:00Z"}, [mail, wa]), [])   # через двое суток — нет
+
+    def test_signature_only_for_colleagues(self):
+        """12.10: подпись «Хаб (по просьбе Ивана)» — коллегам и Дженни; подрядчику (Пабло) — нет."""
+        rules = {"sources": ["teams"], "domains": ["icons8.com"], "names": ["Jenny"]}
+        pablo = {"src": "email", "from": "pablo farias", "contact": "mail:pablo@gmail.com"}
+        self.assertFalse(main.colleague(pablo, rules))
+        self.assertFalse(main.colleague({"src": "whatsapp", "from": "Pablo Electricista"}, rules))
+        self.assertTrue(main.colleague({"src": "teams", "from": "Паша"}, rules))
+        self.assertTrue(main.colleague({"src": "email", "contact": "mail:p@icons8.com"}, rules))
+        self.assertTrue(main.colleague({"src": "telegram", "from": "Jenny"}, rules))
+        self.assertFalse(main.colleague(pablo, None))                     # по умолчанию — без подписи
+
+
 if __name__ == "__main__":
     unittest.main()
 
