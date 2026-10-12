@@ -309,7 +309,7 @@ class Later(unittest.TestCase):
         os.unlink(f.name)
         self.assertEqual(c.take_sends(), [{"id": "k1", "rid": "r1", "text": "Позже", "at": "2026-10-10T09:00:00Z"},
                                           {"react": "👍", "id": "k1", "rid": "r2"}, {"cancel": "r1"}])
-        self.assertEqual(c.settings, {"signature": "_Хаб_", "autodraft": False})
+        self.assertEqual(c.settings, {"signature": "_Хаб_", "autodraft": False, "prompt": ""})
 
     def test_later_waits_for_its_time_and_goes_once(self):
         st = {"refs": {"k1": {"chat": "c1", "msg": "m1"}}, "open": {"k1": ["b", "t"]}}
@@ -397,7 +397,7 @@ class Later(unittest.TestCase):
         st = {"config_at": 9e12}
         main.settings(st, C(), self.out.append)
         main.settings(st, C(), self.out.append)   # не изменилось — второй раз не постим
-        self.assertEqual(self.out, [{"kind": "config", "v": 2, "signature": "_Хаб_", "autodraft": True}])
+        self.assertEqual(self.out, [{"kind": "config", "v": 3, "signature": "_Хаб_", "autodraft": True, "prompt": "", "ignored": []}])
 
     def test_history_comes_in_parts_once_and_never_from_a_replayed_journal(self):
         import time
