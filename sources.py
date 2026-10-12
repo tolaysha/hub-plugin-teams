@@ -211,6 +211,90 @@ def whatsapp(cfg, now):
     return items, boxes, errors
 
 
+# --- вложения сообщений (12.10, «фото, видео, файлы, голосовые — как в мессенджере») -----------------------------------
+MEDIA_KEEP = 6   # у скольких последних сообщений с вложениями тянем файл; у остальных — только описание
+
+
+def _state_dir():
+    d = os.environ.get("HUB_STATE_DIR")
+    if d:
+        return d
+    from core.daemon import default_state_dir
+    return default_state_dir()
+
+
+def media_dir(src):
+    """Куда класть: под attachments хаба — страница и клиенты отдают такие файлы сами (/api/file), чужие пути — нет."""
+    d = os.path.join(_state_dir(), "attachments", "inbox", src)
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _transcript(path):
+    """Расшифровка голосового сразу (Whisper / ChatGPT по настройкам хаба); рядом `.txt` — второй раз не гоняем.
+    Пусто — голос не настроен или не вышло: клиент покажет один плеер."""
+    side = path + ".txt"
+    try:
+        with open(side, encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        pass
+    try:
+        from core import catalog
+        from modules.voice import transcribe
+        cfg = catalog.load_config(_state_dir())
+        if not transcribe.enabled(cfg):
+            return ""
+        with open(path, "rb") as f:
+            text = transcribe.transcribe(f.read(), cfg, suffix=os.path.splitext(path)[1] or ".ogg")
+    except Exception as e:   # нет голоса, нет ffmpeg, лимит — расшифровки нет, переписка живёт
+        print(f"teams: расшифровка {os.path.basename(path)}: {e}", flush=True)
+        return ""
+    with open(side, "w", encoding="utf-8") as f:
+        f.write(text)
+    return text
+
+
+def tg_media(cmd, chat, msgs, keep=MEDIA_KEEP):
+    """Вложения сообщений Telegram → список для клиентов: {id, kind, name, mime, size, dur, w, h, url, thumb, text}.
+    Файл — в attachments хаба (`url` — /api/file); тяжёлый (>40 МБ) — миниатюра с thumb:true; не скачался — без url."""
+    from urllib.parse import quote
+    out, d = [], None
+    with_media = [m for m in msgs if m.get("media")]
+    for m in with_media[-keep:]:
+        meta = dict(m["media"])
+        item = {"id": f"tg:{chat}:{m.get('id')}", **meta}
+        d = d or media_dir("tg")
+        base = f"{abs(int(chat)) if str(chat).lstrip('-').isdigit() else chat}-{m.get('id')}"
+        have = next((f for f in os.listdir(d) if f.startswith(base + ".") or f.startswith(base + "-thumb.")), None)
+        if have is None:
+            try:
+                got = json.loads(run([cmd, "media", str(chat), str(m["id"]), "--dir", d], timeout=120) or "{}")
+                have = os.path.basename(got.get("path") or "") or None
+            except (OSError, ValueError, subprocess.TimeoutExpired):
+                have = None
+        if have:
+            path = os.path.join(d, have)
+            item["url"] = "/api/file?path=" + quote(path, safe="")
+            item["thumb"] = "-thumb." in have
+            if meta.get("kind") in ("voice", "audio") and not item["thumb"]:
+                t = _transcript(path)
+                if t:
+                    item["text"] = t
+        out.append(item)
+    return out
+
+
+def tg_reply_text(m, by_id):
+    """Цитата в ответе: текст и автор сообщения, на которое отвечают (если оно в окне)."""
+    r = m.get("reply") or {}
+    src = by_id.get(str(r.get("id")))
+    if not src:
+        return r or None
+    return {"id": r.get("id"), "from": src.get("from") or ("вы" if src.get("out") else ""),
+            "text": (src.get("text") or "")[:160]}
+
+
 # --- Telegram: личный аккаунт, только чтение (`tgnew new` — копия сессии Telethon, прочитанным ничего не отмечает) --
 @source("telegram", every=120)
 def telegram(cfg, now):
@@ -248,9 +332,12 @@ def telegram(cfg, now):
         boxes.add(box)
         mark = (wait[-1].get("id") if wait else "") or r.get("last")
         user = r.get("username") or ""
+        media = tg_media(cmd, cid, wait)
+        links = [m["link"] for m in wait if m.get("link")][-3:]
         items.append({"key": f"{box}:{mark}", "box": box, "src": "telegram", "tier": t,
                       "where": "Telegram" + (" · группа" if group else ""), "from": r.get("name") or cid,
                       "text": text[:1200], "at": iso_utc(at), "mention": False,
+                      **({"media": media} if media else {}), **({"links": links} if links else {}),
                       "link": f"https://t.me/{user}" if user else (f"tg://user?id={cid}" if not group else ""),
                       "ref": {"tg": cid, "cmd": cmd, "send": expand(cfg.get("send") or "~/.claude/bin/send")}})
     return items, boxes, []
@@ -376,9 +463,30 @@ def history(ref, top=20):
                                    str(top), "--json"]))
         except (OSError, ValueError):
             return []
-        return [{"at": iso_utc(datetime.fromtimestamp(m["t"], timezone.utc)), "from": m.get("from") or "",
-                 "me": bool(m.get("out")), "text": m.get("text") or f"[{KIND_NAMES.get(m.get('type'), ('медиа',))[0]}]"}
-                for m in data.get("messages") or []]
+        msgs = data.get("messages") or []
+        by_id = {str(m.get("id")): m for m in msgs}
+        got = {}
+        for it in tg_media(ref.get("cmd") or expand("~/.claude/bin/tgnew"), ref["tg"], msgs):
+            got[it["id"].rsplit(":", 1)[-1]] = it
+        out = []
+        for m in msgs:
+            e = {"at": iso_utc(datetime.fromtimestamp(m["t"], timezone.utc)), "from": m.get("from") or "",
+                 "me": bool(m.get("out")), "text": m.get("text") or ""}
+            if str(m.get("id")) in got:
+                e["media"] = [got[str(m["id"])]]
+            elif m.get("media"):
+                e["media"] = [{**m["media"], "id": f"tg:{ref['tg']}:{m.get('id')}"}]   # без файла: описание
+            if not e["text"] and not e.get("media"):
+                e["text"] = f"[{KIND_NAMES.get(m.get('type'), ('медиа',))[0]}]"
+            if m.get("link"):
+                e["links"] = [m["link"]]
+            for k in ("reactions", "fwd", "edited"):
+                if m.get(k):
+                    e[k] = m[k]
+            if m.get("reply"):
+                e["reply"] = tg_reply_text(m, by_id)
+            out.append(e)
+        return out
     if ref.get("mail"):
         data = json.loads(run([ref["cmd"], "gmail", "thread", "get", ref["thread"], "-a", ref["mail"], "-j"]))
         out = []

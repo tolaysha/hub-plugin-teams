@@ -1,5 +1,6 @@
 """Каналы WhatsApp и почта без сети: поддельные wa и gogx. Запуск — как test_collect (PYTHONPATH — код хаба)."""
 import json
+import shutil
 import os
 import sys
 import tempfile
@@ -221,6 +222,45 @@ class PersonName(unittest.TestCase):
         self.assertEqual(collect.person("Ana [UTC] Gomez"), "Ana [UTC] Gomez")
         self.assertEqual(collect.person("[UTC-03:00]"), "[UTC-03:00]")   # пустым имя не делаем
         self.assertEqual(collect.person(""), "")
+
+
+class Media(unittest.TestCase):
+    def test_telegram_attachments_are_downloaded_into_the_hub_and_described(self):
+        """12.10: фото/файл/голосовое в Telegram — вложением со ссылкой на файл хаба, голосовое — с расшифровкой."""
+        d = tempfile.mkdtemp()
+        os.environ["HUB_STATE_DIR"] = d
+        calls = []
+
+        def fake(cmd, timeout=None):
+            calls.append(cmd)
+            out = cmd[cmd.index("--dir") + 1]
+            name = f"{abs(int(cmd[2]))}-{cmd[3]}" + (".jpg" if cmd[3] == "1" else ".ogg")
+            with open(os.path.join(out, name), "wb") as f:
+                f.write(b"x")
+            return json.dumps({"path": os.path.join(out, name), "thumb": False})
+
+        orig = (sources.run, sources._transcript)
+        sources.run, sources._transcript = fake, lambda p: "привет, перезвони"
+        try:
+            msgs = [{"id": "1", "media": {"kind": "image", "mime": "image/jpeg", "w": 100, "h": 80}},
+                    {"id": "2", "media": {"kind": "voice", "dur": 7}}, {"id": "3", "text": "без вложения"}]
+            got = sources.tg_media("tgnew", "-500", msgs)
+            self.assertEqual([g["kind"] for g in got], ["image", "voice"])
+            self.assertTrue(got[0]["url"].startswith("/api/file?path="))
+            self.assertIn("attachments%2Finbox%2Ftg%2F500-1.jpg", got[0]["url"])
+            self.assertEqual(got[1]["text"], "привет, перезвони")          # расшифровка сразу
+            n = len(calls)
+            sources.tg_media("tgnew", "-500", msgs)
+            self.assertEqual(len(calls), n)                               # файл уже есть — второй раз не качаем
+        finally:
+            sources.run, sources._transcript = orig
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_reply_quote_is_resolved_from_the_window(self):
+        by = {"5": {"id": "5", "text": "во сколько?", "from": "Аня", "out": False}}
+        self.assertEqual(sources.tg_reply_text({"reply": {"id": "5"}}, by),
+                         {"id": "5", "from": "Аня", "text": "во сколько?"})
+        self.assertEqual(sources.tg_reply_text({"reply": {"id": "9"}}, by), {"id": "9"})
 
 
 if __name__ == "__main__":

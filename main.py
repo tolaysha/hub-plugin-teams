@@ -312,7 +312,7 @@ def tick(st, items, owner_last, now, put=post):
         done = bool(i.get("box")) and owner_last.get(i["box"], "") > i["at"]   # уже ответил — сразу отвеченным
         put({"kind": "msg", "id": i["key"], "answered": done, **({"reply": True} if i.get("ref") else {}),
              **({"react": True} if collect.can_react(i.get("ref")) else {}),
-             **{k: i[k] for k in ("src", "where", "from", "text", "at", "link", "mention", "tier") if k in i}})
+             **{k: i[k] for k in ("src", "where", "from", "text", "at", "link", "mention", "tier", "media", "links") if k in i}})
         st.setdefault("who", {})[i["key"]] = {"contact": contact(i), "from": i.get("from"), "src": i.get("src"),
                                               "where": i.get("where")}
         if i.get("ref"):   # куда ответить владелец сможет из вкладки; в пост это не идёт
