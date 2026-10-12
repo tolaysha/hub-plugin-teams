@@ -214,6 +214,17 @@ function personRow(name, group) {
   row.append(head);
   const text = el("div", "tm-text tm-clamp", latest.text);
   row.append(text);
+  const open = group.filter((m) => !done(m));
+  if (open.length) {   // владелец 12.10: скрыть прямо с карточки, не открывая переписку
+    const acts = el("div", "tm-acts");
+    const b = button(open.length > 1 ? `Скрыть ${open.length}` : "Скрыть", "quiet", (e) => {
+      e.stopPropagation();
+      hide(open.map((m) => m.id), true);
+    }, `Скрыть ${open.length > 1 ? `${open.length} сообщений` : "сообщение"} ${name}`);
+    b.addEventListener("keydown", (e) => e.stopPropagation());   // Enter/пробел по кнопке — не открывать переписку
+    acts.append(b);
+    row.append(acts);
+  }
   row.addEventListener("click", () => { dmPerson = name; paint(); });
   row.setAttribute("role", "button");
   row.setAttribute("tabindex", "0");
