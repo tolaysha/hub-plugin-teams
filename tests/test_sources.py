@@ -128,6 +128,17 @@ class Telegram(unittest.TestCase):
         sources.reply(items[0]["ref"], "Да, вечером")
         self.assertEqual(calls[0][1:], ["tg", "--to", "3123499", "--text", "Да, вечером"])
 
+    def test_send_refusals_are_human_text(self):
+        # 12.10: «Not sent: send failed: TELEGRAM_API_ID / TELEGRAM_API_HASH not set» в интерфейсе — именами переменных
+        self.assertNotIn("TELEGRAM_API", sources.human("send failed: TELEGRAM_API_ID / TELEGRAM_API_HASH not set"))
+        self.assertIn("Telegram", sources.human("send failed: TELEGRAM_API_ID / TELEGRAM_API_HASH not set"))
+        self.assertIn("08:00", sources.human("Blocked: WhatsApp/Telegram are not sent between 23:00 and 08:00 ART."))
+        self.assertEqual(sources.human("send failed: что-то своё"), "что-то своё")
+        sources.run = lambda cmd, timeout=0: (_ for _ in ()).throw(OSError("send failed: TELEGRAM_API_ID not set"))
+        with self.assertRaises(OSError) as c:
+            sources.reply({"tg": "1", "send": "send"}, "x")
+        self.assertNotIn("TELEGRAM_API", str(c.exception))
+
 
 class Email(unittest.TestCase):
     def setUp(self):

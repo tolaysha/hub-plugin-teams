@@ -294,7 +294,33 @@ def email(cfg, now):
 
 
 # --- Ответ владельца из вкладки в WhatsApp и почту: теми же командами машины, что читают -----------------------------
+# Отказы команды send — человеческим текстом, не именами переменных (владелец 12.10: «показывать ошибку понятно»)
+HUMAN = [
+    (re.compile(r"TELEGRAM_API_(ID|HASH)|api_id|api_hash", re.I), "Telegram не подключён на этом компьютере (нет ключей входа) — отправить не вышло"),
+    (re.compile(r"Telethon session|session not found|not authorized|AuthKey", re.I), "Telegram не авторизован на этом компьютере — отправить не вышло"),
+    (re.compile(r"between 23:00 and 08:00|night", re.I), "С 23:00 до 08:00 по Аргентине WhatsApp и Telegram не отправляются — повтори после 08:00"),
+    (re.compile(r"weekend|Saturday|Sunday|held", re.I), "В выходные это сообщение не отправляется — повтори в понедельник"),
+    (re.compile(r"FloodWait|flood", re.I), "Telegram просит подождать — повтори через несколько минут"),
+    (re.compile(r"timed? ?out|timeout", re.I), "Не дождались ответа от сервиса — повтори"),
+]
+
+
+def human(message):
+    msg = str(message or "")
+    for rx, text in HUMAN:
+        if rx.search(msg):
+            return text
+    return re.sub(r"^(?:send failed|Blocked|Not sent):\s*", "", msg).strip() or "не отправлено"
+
+
 def reply(ref, text):
+    try:
+        return _reply(ref, text)
+    except OSError as e:
+        raise OSError(human(e)) from None
+
+
+def _reply(ref, text):
     """WhatsApp — сообщением в тот же чат (команда send из sources.json: её ночные и прочие запреты действуют — отказ
     вернётся ошибкой во вкладку); почта — ответом всем в ту же цепочку."""
     if ref.get("wa"):
