@@ -215,8 +215,16 @@ function personRow(name, group) {
   const text = el("div", "tm-text tm-clamp", latest.text);
   row.append(text);
   const open = group.filter((m) => !done(m));
-  if (open.length) {   // владелец 12.10: скрыть прямо с карточки, не открывая переписку
+  if (open.length) {   // владелец 12.10: «Скрыть» прямо с карточки, «В работу» — если сообщение одно
     const acts = el("div", "tm-acts");
+    if (open.length === 1) {
+      const busy = sending.has(open[0].id);
+      const go = button(busy ? "Отправляю…" : "В работу", "primary", (e) => { e.stopPropagation(); toHub(open[0], "work"); },
+        `В работу: сообщение ${name}`);
+      go.disabled = busy;
+      go.addEventListener("keydown", (e) => e.stopPropagation());
+      acts.append(go);
+    }
     const b = button(open.length > 1 ? `Скрыть ${open.length}` : "Скрыть", "quiet", (e) => {
       e.stopPropagation();
       hide(open.map((m) => m.id), true);
