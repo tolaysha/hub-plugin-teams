@@ -143,7 +143,11 @@ def media_summary(kinds, n):
     число, а про что он писал»). Без типов от `wa` — число и общие слова. Содержимое без открытия чата недоступно."""
     parts = []
     for k, c in sorted((kinds or {}).items(), key=lambda kv: -kv[1]):
+        if k in SERVICE_TYPES:
+            continue
         one, many = KIND_NAMES.get(k, (k, k))
+        if k == "chat":   # 12.10: «1 текст» читалось как содержимое; текст без копии и без превью — так и говорим
+            one, many = "сообщение без текста (чат не открывали)", "сообщений без текста (чат не открывали)"
         parts.append(f"{c} {one if c == 1 else many}")
     return ", ".join(parts) if parts else f"Непрочитанных: {n} (фото, голосовое или файл)"
 

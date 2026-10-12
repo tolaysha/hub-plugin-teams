@@ -221,6 +221,9 @@ class MediaSummary(unittest.TestCase):
         from sources import media_summary
         self.assertEqual(media_summary({"ptt": 4, "image": 1}, 5), "4 голосовых, 1 фото")
         self.assertIn("Непрочитанных: 6", media_summary(None, 6))
+        # текст без копии не выдаём за «1 текст»; служебное не считаем
+        self.assertEqual(media_summary({"chat": 1, "notification_template": 1}, 2),
+                         "1 сообщение без текста (чат не открывали)")
 
     def test_digest_is_the_unread_texts(self):
         from sources import unread_digest
