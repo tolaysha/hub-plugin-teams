@@ -37,6 +37,10 @@ class Fake:
             return {"value": self.channel}
         if tool == "search-query":
             return {"value": [{"hitsContainers": [{"hits": self.hits}]}]}
+        if tool == "download-bytes-to-file":
+            with open(args["outputPath"], "wb") as f:
+                f.write(b"\x89PNG fake")
+            return {"path": args["outputPath"], "contentType": "image/png", "bytesWritten": 9}
         raise AssertionError(tool)
 
 
@@ -63,6 +67,29 @@ class Chats(unittest.TestCase):
         self.assertEqual(out[0]["where"], "Личка")
         self.assertEqual(out[1]["where"], "Команда")
         self.assertEqual(last[collect.key("d", "")], "2026-10-09T10:02:00Z")
+
+
+class Files(unittest.TestCase):
+    def test_hosted_image_is_downloaded_and_file_reference_becomes_a_link(self):
+        """13.10: картинка в личке Teams — media[] (файл в attachments хаба); файл SharePoint — ссылкой; картинка без текста не теряется."""
+        import shutil, tempfile
+        d = tempfile.mkdtemp()
+        os.environ["HUB_STATE_DIR"] = d
+        try:
+            ref = {"contentType": "reference", "contentUrl": "https://corp.sharepoint.com/f/plan.xlsx", "name": "plan.xlsx"}
+            img = '<img src="https://graph.microsoft.com/v1.0/chats/d/messages/1/hostedContents/aGlk/$value">'
+            fake = Fake([chat("d", "oneOnOne", "2026-10-09T10:05:00Z")],
+                        {"d": [msg("1", "2026-10-09T10:01:00Z", "alex", img),
+                               msg("2", "2026-10-09T10:02:00Z", "alex", "<p>вот</p>", attachments=[ref])]})
+            out = collect.chats(fake, CUT, ME, {})
+            by = {i["key"]: i for i in out}
+            a, b = by[collect.key("d", "1")], by[collect.key("d", "2")]
+            self.assertEqual(a["text"], "")
+            self.assertEqual(a["media"][0]["kind"], "image")
+            self.assertTrue(os.path.exists(os.path.join(d, "attachments", "inbox", "teams", a["media"][0]["name"])))
+            self.assertEqual(b["links"][0]["title"], "plan.xlsx")
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
 
 
 class ChannelPosts(unittest.TestCase):

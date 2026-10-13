@@ -37,6 +37,45 @@ def plain(body):
 _TZ = re.compile(r"\s*[\[(]\s*(?:UTC|GMT)\s*[+\-\u2212]\s*\d{1,2}(?::?\d{2})?\s*[\])]\s*")
 
 
+_EXT = {"image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp", "video/mp4": "mp4"}
+HOSTED = re.compile(r"/hostedContents/([^/\"'?]+)/\$value")
+
+
+def attachments(mcp, m, chat, keep=4):
+    """Вложения сообщения Teams (13.10): картинки из тела (hostedContents) скачиваются Graph-вызовом в attachments хаба и
+    отдаются как media[]; файлы-ссылки (SharePoint/OneDrive, attachments[].contentType == reference) — в links[]: байты
+    за входом Microsoft, откроются в самом Teams. Не скачалось — вложения нет (сообщение остаётся)."""
+    import os
+    from urllib.parse import quote
+    import sources
+    media, links = [], []
+    for hid in list(dict.fromkeys(HOSTED.findall((m.get("body") or {}).get("content") or "")))[:keep]:
+        d = sources.media_dir("teams")
+        base = hashlib.sha1(f"{chat}:{m.get('id')}:{hid}".encode()).hexdigest()[:20]
+        have = next((f for f in os.listdir(d) if f.startswith(base + ".")), None)
+        if have is None:
+            path = os.path.join(d, base + ".png")   # расширение уточним по contentType ответа
+            try:
+                got = mcp.call("download-bytes-to-file",
+                               {"target": f"/chats/{chat}/messages/{m['id']}/hostedContents/{hid}/$value", "outputPath": path})
+                ext = _EXT.get(str(got.get("contentType") or "").split(";")[0].lower(), "png")
+                if ext != "png" and os.path.exists(path):
+                    os.replace(path, os.path.join(d, f"{base}.{ext}"))
+                    path = os.path.join(d, f"{base}.{ext}")
+                have = os.path.basename(path) if os.path.exists(path) else None
+            except OSError:
+                have = None
+        if have:
+            ext = have.rsplit(".", 1)[-1]
+            mime = next((k for k, v in _EXT.items() if v == ext), "image/png")
+            media.append({"id": f"teams:{m.get('id')}:{hid[:12]}", "kind": "video" if mime.startswith("video") else "image",
+                          "name": have, "mime": mime, "url": "/api/file?path=" + quote(os.path.join(d, have), safe="")})
+    for a in m.get("attachments") or []:
+        if a.get("contentType") == "reference" and a.get("contentUrl"):
+            links.append({"url": a["contentUrl"], "title": a.get("name") or "", "site": "Teams"})
+    return media, links[:3]
+
+
 def person(name):
     """Имя человека без часового пояса: «Anthony Minkowski [UTC-03:00]» → «Anthony Minkowski» (12.10)."""
     s = _TZ.sub(" ", name or "").strip()
@@ -96,11 +135,13 @@ def chats(mcp, cutoff, me, owner_last, top=30):
             if not (dm or mention or replies_to_me(m, me)):
                 continue
             text = plain((m.get("body") or {}).get("content"))
-            if not text:
+            media, links = attachments(mcp, m, c["id"])
+            if not text and not media and not links:
                 continue
             out.append({"key": key(c["id"], m["id"]), "box": box, "src": "dm" if dm else "mention",
                         "where": "Личка" if dm else (c.get("topic") or "Групповой чат"),
                         "from": sender(m).get("displayName") or "", "text": text, "at": m["createdDateTime"],
+                        **({"media": media} if media else {}), **({"links": links} if links else {}),
                         "link": m.get("webUrl") or c.get("webUrl") or "", "mention": mention,
                         "ref": {"chat": c["id"], "msg": m["id"]}})   # ref — куда отвечать и на что ставить реакцию (в посте не уходит)
     return out

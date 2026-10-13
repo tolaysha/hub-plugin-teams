@@ -83,6 +83,9 @@ def post(data):
     if len(text) > POST_MAX and isinstance(data.get("text"), str):   # пост канала — до 2000 знаков: режем текст
         data = {**data, "text": data["text"][:max(0, len(data["text"]) - (len(text) - POST_MAX) - 1)] + "…"}
         text = json.dumps(data, ensure_ascii=False)
+    while len(text) > POST_MAX and isinstance(data.get("media"), list) and data["media"]:
+        data = {**data, "media": data["media"][:-1]}   # пост до 2000 знаков: вложений меньше, чем потерять сообщение целиком
+        text = json.dumps(data, ensure_ascii=False)
     if len(text) > POST_MAX:   # ядро такой не примет; списки каналов режет directory_posts — сюда не должно дойти
         print(f"teams: пост {data.get('kind')} длиннее {POST_MAX} знаков — не отправлен", file=sys.stderr, flush=True)
         return
