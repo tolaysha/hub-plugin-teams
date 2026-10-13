@@ -8,7 +8,10 @@
 реакция, {"kind": "settings", signature, autodraft, prompt} — подпись черновиков, «черновик сразу» и указания владельца
 по разбору входящих, {"kind": "ignore", id} — больше не показывать и не драфтить этого собеседника (по сообщению id),
 {"kind": "unignore", contact} — вернуть, {"kind": "history", id} —
-показать всю переписку вокруг сообщения. В ответ плагин постит sent / send_failed / scheduled / canceled / reacted /
+показать всю переписку вокруг сообщения, {"kind": "hours", from, to, weekends} — рабочие часы отправки (hours.py),
+{"kind": "hours_for", id, weekends} — выходные у собеседника этого сообщения (true/false; null — как у всех). Команда
+send отказала из-за ночи или выходного — это не ошибка: ответ переносится на ближайшее разрешённое время, пост
+{"kind": "scheduled", id, rid, at, held: "night"|"weekend"} (hold). В ответ плагин постит sent / send_failed / scheduled / canceled / reacted /
 react_failed, {"kind": "config"} — действующие настройки (в том числе prompt владельца и список ignored) и {"kind": "thread", id, part, of, items} — переписку кусками.
 Владелец ответил
 в той же переписке позже — пост {"kind": "answered", "id"}. Сбой чтения FAIL_AFTER раз подряд — {"kind": "status",
@@ -32,6 +35,7 @@ from core.tools import from_owner  # noqa: E402
 
 import collect  # noqa: E402
 import contacts  # noqa: E402
+import hours  # noqa: E402
 
 import mcp  # noqa: E402
 import sources  # noqa: E402
@@ -48,7 +52,7 @@ FAIL_AFTER = 3
 SEEN_MAX, OPEN_MAX = 3000, 500
 POST_MAX = 2000
 PROMPT_MAX = 2000                  # знаков: указания владельца по разбору входящих
-OWNER_KINDS = re.compile(rb'watch|\\"(?:send|react|cancel|settings|history|ignore|unignore|contacts|send_new|read|edit|delete)\\"')   # посты владельца, которые читает процесс
+OWNER_KINDS = re.compile(rb'watch|\\"(?:send|react|cancel|settings|history|ignore|unignore|contacts|send_new|read|edit|delete|hours|hours_for)\\"')   # посты владельца, которые читает процесс
 DIR_EVERY = 6 * 3600               # список каналов команд перечитываем и заново постим раз в 6 часов: канал плагина
                                    # хранит 500 последних постов, старые списки вытесняются сообщениями
 
@@ -107,6 +111,7 @@ class Choice:
         self.sends = []    # слово владельца из вкладки по порядку: ответы {"id", "rid", "text"[, "at"]}, реакции
                            # {"react": emoji, "id", "rid"}, отмены {"cancel": rid} — ждут исполнения (take_sends)
         self.settings = None   # его последний пост настроек: {"signature", "autodraft"}
+        self.hours = None      # его последние рабочие часы: {"from", "to", "weekends"}
 
     def poll(self):
         try:
@@ -189,6 +194,11 @@ class Choice:
             self.settings = {"signature": str(body.get("signature") or "")[:300],
                              "autodraft": body.get("autodraft") is not False,
                              "prompt": str(body.get("prompt") or "").strip()[:PROMPT_MAX]}
+        elif isinstance(body, dict) and body.get("kind") == "hours":
+            self.hours = hours.clean(body) or self.hours   # пустое окно не принимаем: остаётся прежнее
+        elif isinstance(body, dict) and body.get("kind") == "hours_for" and isinstance(body.get("id"), str):
+            # выходные у одного собеседника: true/false — как сказано, null — как у всех
+            self.sends.append({"hours_for": body["id"], "weekends": body.get("weekends")})
         elif isinstance(body, dict) and body.get("kind") == "ignore" and isinstance(body.get("id"), str):
             self.sends.append({"ignore": body["id"]})
         elif isinstance(body, dict) and body.get("kind") == "unignore" and isinstance(body.get("contact"), str):
@@ -418,8 +428,8 @@ def tick(st, items, owner_last, now, put=post):
              **({"react": True} if collect.can_react(i.get("ref")) else {}),
              "sign": colleague(i, rules),   # подпись хаба под черновиком — только когда это коллега
              **({"also": i["also"]} if i.get("also") else {}),
-             **{k: i[k] for k in ("src", "where", "from", "text", "at", "link", "mention", "tier", "media", "links", "unread")
-                if k in i}})
+             "contact": contact(i),   # по нему приложения берут рабочие часы собеседника (config.hours.except)
+             **{k: i[k] for k in ("src", "where", "from", "text", "at", "link", "mention", "tier", "media", "links", "unread") if k in i}})
         st.setdefault("who", {})[i["key"]] = {"contact": contact(i), "from": i.get("from"), "src": i.get("src"),
                                               "where": i.get("where")}
         if i.get("ref"):   # куда ответить владелец сможет из вкладки; в пост это не идёт
@@ -513,13 +523,43 @@ def config(st, put=post):
     """Действующие настройки — постом: их читают вкладка и приложения (подпись черновиков, «черновик сразу»)."""
     cfg = st.get("cfg") or {}
     put({"kind": "config", "v": 3, "signature": cfg.get("signature") or "", "autodraft": cfg.get("autodraft") is not False,
-         "prompt": cfg.get("prompt") or "", "ignored": ignored_list(st)})
+         "prompt": cfg.get("prompt") or "", "ignored": ignored_list(st), "hours": hours_config(st)})
     st["config_at"] = time.time()
 
 
+def hours_config(st):
+    """Рабочие часы для приложений: окно, выходные, пояс хаба и собеседники, у которых выходные наоборот."""
+    h = st.get("hours") or {}
+    base = hours.clean(h) or hours.DEFAULT
+    return {**base, "tz": hours.tz_name(), "utc": int(hours.local().utcoffset().total_seconds() // 60),
+            "except": [{"contact": c, "name": n} for c, n in (h.get("except") or {}).items()]}
+
+
+def hours_for(st, key, weekends, put=post):
+    """Выходные у собеседника этого сообщения: отличаются от общего правила — он в исключениях, совпадают — нет."""
+    who = (st.get("who") or {}).get(key)
+    if not who:
+        return
+    h = st.setdefault("hours", dict(hours.DEFAULT))
+    base = (hours.clean(h) or hours.DEFAULT)["weekends"]
+    if isinstance(weekends, bool) and weekends != base:
+        h.setdefault("except", {})[who["contact"]] = who.get("from") or ""
+    else:
+        (h.get("except") or {}).pop(who["contact"], None)
+    config(st, put)
+
+
 def settings(st, choice, put=post):
+    fresh = False
     if choice.settings is not None and choice.settings != st.get("cfg"):
-        st["cfg"] = choice.settings
+        st["cfg"], fresh = choice.settings, True
+    new = getattr(choice, "hours", None)
+    if new is not None and new != hours.clean(st.get("hours")):
+        # общее правило сменилось: исключения «наоборот» считались от прежнего — оставляем их только при тех же выходных
+        old = st.get("hours") or {}
+        keep = old.get("except") if (hours.clean(old) or hours.DEFAULT)["weekends"] == new["weekends"] else None
+        st["hours"], fresh = {**new, **({"except": keep} if keep else {})}, True
+    if fresh:
         config(st, put)
     elif time.time() - (st.get("config_at") or 0) >= DIR_EVERY:   # канал хранит 500 постов — напоминаем
         config(st, put)
@@ -592,7 +632,9 @@ def deliver(st, reader, ref, text=None, emoji=None, files=None, reply_to=None, q
 def send_replies(st, reader, queue, put=post, now=None):
     """Слово владельца из вкладки и приложений по порядку: ответ {"id", "rid", "text"[, "at"]} («Ответить», «Отправить»
     у черновика; at в будущем — ждёт своего часа в состоянии), реакция {"react", "id", "rid"}, отмена {"cancel": rid}.
-    rid помним ДО отправки: упало посреди — второй раз не отправим (владелец увидит «не отправлено» и нажмёт сам)."""
+    rid помним ДО отправки: упало посреди — второй раз не отправим (владелец увидит «не отправлено» и нажмёт сам).
+    Отказ гейта команды send (ночь, выходной) — не ошибка: ответ встаёт в ту же очередь на ближайшее разрешённое время
+    (hold). Модель всех исходов — hub-ios docs/send-model."""
     done = st.setdefault("sent_rids", [])
     later = st.setdefault("later", {})
     for q in queue:
@@ -619,6 +661,10 @@ def send_replies(st, reader, queue, put=post, now=None):
         if "send_new" in q:
             send_new(st, reader, q, put)
             continue
+        if "hours_for" in q:
+            hours_for(st, q["hours_for"], q.get("weekends"), put)
+            save(st)
+            continue
         if "cancel" in q:
             held = later.pop(q["cancel"], None)
             if held:   # снятое не уйдёт и после перезапуска (журнал читается заново)
@@ -633,11 +679,30 @@ def send_replies(st, reader, queue, put=post, now=None):
             put({"kind": "scheduled", "id": q["id"], "rid": q["rid"], "at": q["at"]})
             save(st)
             continue
-        send_one(st, reader, q, put)
+        send_one(st, reader, q, put, now)
     for rid, q in list(later.items()):
         if due(q["at"], now):
             del later[rid]
-            send_one(st, reader, {**q, "rid": rid}, put)
+            send_one(st, reader, {**q, "rid": rid}, put, now)
+
+
+def hold(st, q, why, put=post, now=None):
+    """Гейт отказал — переносим на первое время после его открытия, разрешённое рабочими часами собеседника; владелец
+    видит «отправится тогда-то». Отказал CAP раз подряд — правила не дают отправить вовсе: говорим ему."""
+    tries = int(q.get("tries") or 0) + 1
+    if tries >= hours.CAP:
+        return False
+    who = (st.get("who") or {}).get(q["id"]) or {}
+    at = hours.defer_to(hours.rule(st.get("hours"), who.get("contact")), hours.local(now), why)
+    at = iso(at.astimezone(timezone.utc))
+    st.setdefault("later", {})[q["rid"]] = {**{k: q[k] for k in ("id", "text", "files", "reply_to", "quote") if k in q},
+                                            "at": at, "tries": tries}
+    done = st.setdefault("sent_rids", [])
+    if q["rid"] in done:
+        done.remove(q["rid"])   # не отправлено: после перезапуска уйдёт из later, а не потеряется
+    put({"kind": "scheduled", "id": q["id"], "rid": q["rid"], "at": at, "held": why})
+    save(st)
+    return True
 
 
 def source_cfg():
@@ -780,7 +845,7 @@ def history(st, reader, q, put=post, now=None):
              "more": len(items) >= limit and not search})   # страница полная — старше, возможно, ещё есть
 
 
-def send_one(st, reader, q, put=post):
+def send_one(st, reader, q, put=post, now=None):
     done = st.setdefault("sent_rids", [])
     done.append(q["rid"])
     del done[:-500]
@@ -789,6 +854,11 @@ def send_one(st, reader, q, put=post):
     try:
         deliver(st, reader, (st.get("refs") or {}).get(q["id"]), (q.get("text") or "")[:POST_MAX], emoji,
                 files=q.get("files"), reply_to=q.get("reply_to"), quote=q.get("quote"))
+    except sources.Held as e:
+        if not emoji and hold(st, q, e.why, put, now):
+            return
+        put({"kind": "react_failed" if emoji else "send_failed", "id": q["id"], "rid": q["rid"], "error": short(e)})
+        return
     except Exception as e:   # noqa: BLE001
         reader.close()
         put({"kind": "react_failed" if emoji else "send_failed", "id": q["id"], "rid": q["rid"], "error": short(e)})

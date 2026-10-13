@@ -569,7 +569,7 @@ def email(cfg, now):
 HUMAN = [
     (re.compile(r"TELEGRAM_API_(ID|HASH)|api_id|api_hash", re.I), "Telegram не подключён на этом компьютере (нет ключей входа) — отправить не вышло"),
     (re.compile(r"Telethon session|session not found|not authorized|AuthKey", re.I), "Telegram не авторизован на этом компьютере — отправить не вышло"),
-    (re.compile(r"between 23:00 and 08:00|night", re.I), "С 23:00 до 08:00 по Аргентине WhatsApp и Telegram не отправляются — повтори после 08:00"),
+    (re.compile(r"between 2[23]:00 and 08:00|quiet hours|night", re.I), "С 23:00 до 08:00 по Аргентине WhatsApp и Telegram не отправляются — повтори после 08:00"),
     (re.compile(r"weekend|Saturday|Sunday|held", re.I), "В выходные это сообщение не отправляется — повтори в понедельник"),
     (re.compile(r"FloodWait|flood", re.I), "Telegram просит подождать — повтори через несколько минут"),
     (re.compile(r"timed? ?out|timeout", re.I), "Не дождались ответа от сервиса — повтори"),
@@ -584,10 +584,29 @@ def human(message):
     return re.sub(r"^(?:send failed|Blocked|Not sent):\s*", "", msg).strip() or "не отправлено"
 
 
+class Held(OSError):
+    """Команда отправки отказала, ничего не отправив: ночь или выходной. Не ошибка — плагин перенесёт (main.hold)."""
+
+    def __init__(self, why, text):
+        super().__init__(text)
+        self.why = why
+
+
+def held(message):
+    """Отказ гейта команды send → «night» / «weekend»; любая другая ошибка → None."""
+    msg = str(message or "")
+    if HUMAN[2][0].search(msg):
+        return "night"
+    return "weekend" if HUMAN[3][0].search(msg) else None
+
+
 def reply(ref, text, files=None, reply_to=None, quote=None):
     try:
         return _reply(ref, text, files or [], reply_to, quote)
     except OSError as e:
+        why = held(e)
+        if why:
+            raise Held(why, human(e)) from None
         raise OSError(human(e)) from None
 
 

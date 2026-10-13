@@ -521,6 +521,8 @@ class Later(unittest.TestCase):
         st = {"config_at": 9e12}
         main.settings(st, C(), self.out.append)
         main.settings(st, C(), self.out.append)   # не изменилось — второй раз не постим
+        hours = self.out[0].pop("hours")   # рабочие часы по умолчанию — подробно в test_hours
+        self.assertEqual((hours["from"], hours["to"], hours["weekends"], hours["except"]), ("08:00", "20:00", False, []))
         self.assertEqual(self.out, [{"kind": "config", "v": 3, "signature": "_Хаб_", "autodraft": True, "prompt": "", "ignored": []}])
 
     def test_history_comes_in_parts_once_and_never_from_a_replayed_journal(self):
