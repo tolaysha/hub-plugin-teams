@@ -59,7 +59,7 @@ class Gate(unittest.TestCase):
         self.sent, self.out, self.answer = [], [], None
         self.real = (sources.reply, main.save)
 
-        def reply(ref, text):
+        def reply(ref, text, files=None, reply_to=None, quote=None):
             if isinstance(self.answer, Exception):
                 raise self.answer
             if self.answer:
