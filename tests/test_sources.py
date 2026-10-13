@@ -361,6 +361,22 @@ class WaMedia(unittest.TestCase):
             sources.run = orig
 
 
+class MailFiles(unittest.TestCase):
+    def test_attachments_listed_and_signature_logos_skipped(self):
+        """13.10: вложения письма — в media; мелкие inline-картинки (логотип подписи) не считаем."""
+        from sources import mail_files
+        payload = {"mimeType": "multipart/mixed", "parts": [
+            {"mimeType": "text/plain", "body": {"size": 5}},
+            {"mimeType": "image/jpeg", "filename": "a.jpg", "body": {"attachmentId": "X1", "size": 875537},
+             "headers": [{"name": "Content-Disposition", "value": "attachment"}]},
+            {"mimeType": "image/png", "filename": "", "body": {"attachmentId": "X2", "size": 4000},
+             "headers": [{"name": "Content-ID", "value": "<logo>"}]},
+            {"mimeType": "application/pdf", "filename": "doc.pdf", "body": {"attachmentId": "X3", "size": 100}}]}
+        got = mail_files(payload)
+        self.assertEqual([f["name"] for f in got], ["a.jpg", "doc.pdf"])
+        self.assertEqual(got[0]["att"], "X1")
+
+
 if __name__ == "__main__":
     unittest.main()
 

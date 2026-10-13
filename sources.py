@@ -457,10 +457,52 @@ def mail_thread(cmd, acct, thread_id, count):
             at = ""
         out.append({"at": at, "from": re.sub(r"\s*<[^>]*>\s*$", "", heads.get("from", "")).strip().strip('"'),
                     "me": "SENT" in (m.get("labelIds") or []), "text": message_text(m.get("payload")) or (m.get("snippet") or "").strip(),
-                    "subject": heads.get("subject", "")})
+                    "subject": heads.get("subject", ""), "id": m.get("id"), "files": mail_files(m.get("payload"))})
     if len(_BODIES) > 200:
         _BODIES.clear()
     _BODIES[key] = out
+    return out
+
+
+def mail_files(payload):
+    """Вложения письма [{name, mime, size, att}]: файлы и картинки в теле; мелкие картинки-подписи (логотипы,
+    трекеры — inline до 30 КБ) не считаем."""
+    out = []
+
+    def walk(p):
+        body = p.get("body") or {}
+        name, att = p.get("filename") or "", body.get("attachmentId")
+        if att and (name or (p.get("mimeType") or "").startswith("image/")):
+            heads = {h.get("name", "").lower(): h.get("value", "") for h in p.get("headers") or []}
+            size = int(body.get("size") or 0)
+            if not (heads.get("content-id") and size < 30000 and (p.get("mimeType") or "").startswith("image/")):
+                out.append({"name": name or f"image-{abs(hash(att)) % 10**6}", "mime": p.get("mimeType") or "", "size": size, "att": att})
+        for c in p.get("parts") or []:
+            walk(c)
+    walk(payload or {})
+    return out
+
+
+def mail_media(cmd, acct, msg, keep=MEDIA_KEEP, limit=40 << 20):
+    """Вложения письма — файлами в attachments хаба (`url` — /api/file), как у Telegram; тяжёлое и лишнее — без файла."""
+    from urllib.parse import quote
+    d = media_dir("mail")
+    out = []
+    for f in (msg.get("files") or [])[:keep]:
+        name = re.sub(r"[^\w.\- ]+", "_", f["name"])[:80] or "file"
+        path = os.path.join(d, f"{msg['id']}-{name}")
+        item = {"id": f"mail:{msg['id']}:{__import__('hashlib').md5(f['att'].encode()).hexdigest()[:10]}", "kind": ("image" if f["mime"].startswith("image/") else
+                "video" if f["mime"].startswith("video/") else "audio" if f["mime"].startswith("audio/") else "file"),
+                "name": f["name"], "mime": f["mime"], "size": f["size"]}
+        if f["size"] <= limit:
+            if not os.path.exists(path):
+                try:
+                    run([cmd, "gmail", "attachment", msg["id"], f["att"], "-a", acct, "--out", path], timeout=120)
+                except (OSError, subprocess.SubprocessError):
+                    pass
+            if os.path.exists(path) and os.path.getsize(path):
+                item["url"] = "/api/file?path=" + quote(path, safe="")
+        out.append(item)
     return out
 
 
@@ -498,12 +540,14 @@ def email(cfg, now):
             box = f"mail:{acct}:{th['id']}"
             boxes.add(box)
             name = re.sub(r"\s*<[^>]*>\s*$", "", sender).strip().strip('"') or (addr.group(1) if addr else "")
-            body = ""
+            body, media = "", []
             if fetched < 15:   # тело нового письма — не только тема (владелец 12.10); цепочки без нового кешируются
                 fetched += 1
                 try:
                     msgs = [m for m in mail_thread(cmd, acct, th["id"], th.get("messageCount")) if not m["me"]]
                     body = (msgs[-1]["text"] if msgs else "")[:1000]
+                    if msgs and msgs[-1].get("files"):
+                        media = mail_media(cmd, acct, msgs[-1])
                 except (OSError, ValueError, subprocess.TimeoutExpired):
                     body = ""
             links = [{"url": u.rstrip(".,;")} for u in dict.fromkeys(URL.findall(body))
@@ -511,7 +555,7 @@ def email(cfg, now):
             items.append({"key": f"{box}:{th.get('date')}:{th.get('messageCount')}", "box": box, "src": "email",
                           "tier": t, "where": "Почта" + (f" · {acct}" if len(cfg.get("accounts") or []) > 1 else ""),
                           "from": name or "—", "text": (subject or "(без темы)") + (f"\n\n{body}" if body else ""),
-                          "at": at, **({"links": links} if links else {}),
+                          "at": at, **({"links": links} if links else {}), **({"media": media} if media else {}),
                           "link": f"https://mail.google.com/mail/u/0/?authuser={acct}#inbox/{th['id']}", "mention": False,
                           "contact": f"mail:{(addr.group(1) if addr else sender).lower()}",
                           "ref": {"mail": acct, "thread": th["id"], "subject": subject, "cmd": cmd}})
