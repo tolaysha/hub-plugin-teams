@@ -29,7 +29,7 @@ class Fake:
     def __init__(self, chats=(), chat_msgs=None, channel=(), hits=()):
         self.chats, self.chat_msgs, self.channel, self.hits = list(chats), chat_msgs or {}, list(channel), list(hits)
 
-    def call(self, tool, args):
+    def call(self, tool, args, empty_ok=False):
         if tool == "list-chats":
             return {"value": self.chats}
         if tool == "list-chat-messages":
@@ -38,6 +38,10 @@ class Fake:
             return {"value": self.channel}
         if tool == "search-query":
             return {"value": [{"hitsContainers": [{"hits": self.hits}]}]}
+        if tool == "download-bytes-to-file":
+            with open(args["outputPath"], "wb") as f:
+                f.write(b"\x89PNG fake")
+            return {"path": args["outputPath"], "contentType": "image/png", "bytesWritten": 9}
         raise AssertionError(tool)
 
 
@@ -95,6 +99,28 @@ class Chats(unittest.TestCase):
         self.assertEqual(collect.chats(fake, CUT, ME, last, reacted=reacted, scan="2026-10-08T10:00:00Z"), [])
         self.assertEqual(reacted, {collect.key("d", "1")})
 
+class Files(unittest.TestCase):
+    def test_hosted_image_is_downloaded_and_file_reference_becomes_a_link(self):
+        """13.10: картинка в личке Teams — media[] (файл в attachments хаба); файл SharePoint — ссылкой; картинка без текста не теряется."""
+        import shutil, tempfile
+        d = tempfile.mkdtemp()
+        os.environ["HUB_STATE_DIR"] = d
+        try:
+            ref = {"contentType": "reference", "contentUrl": "https://corp.sharepoint.com/f/plan.xlsx", "name": "plan.xlsx"}
+            img = '<img src="https://graph.microsoft.com/v1.0/chats/d/messages/1/hostedContents/aGlk/$value">'
+            fake = Fake([chat("d", "oneOnOne", "2026-10-09T10:05:00Z")],
+                        {"d": [msg("1", "2026-10-09T10:01:00Z", "alex", img),
+                               msg("2", "2026-10-09T10:02:00Z", "alex", "<p>вот</p>", attachments=[ref])]})
+            out = collect.chats(fake, CUT, ME, {})
+            by = {i["key"]: i for i in out}
+            a, b = by[collect.key("d", "1")], by[collect.key("d", "2")]
+            self.assertEqual(a["text"], "")
+            self.assertEqual(a["media"][0]["kind"], "image")
+            self.assertTrue(os.path.exists(os.path.join(d, "attachments", "inbox", "teams", a["media"][0]["name"])))
+            self.assertEqual(b["links"][0]["title"], "plan.xlsx")
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
 
 class ChannelPosts(unittest.TestCase):
     def test_only_thread_root_replies_only_when_mentioning_owner(self):
@@ -130,6 +156,14 @@ class Mentions(unittest.TestCase):
         out = collect.channel_mentions(Fake(hits=hits), CUT, "me@x", "Owner",
                                        {"c1": {"team": "Dev", "channel": "Backend", "teamId": "t"}}, skip={"sup"})
         self.assertEqual([(i["text"], i["where"]) for i in out], [("Owner посмотри", "Dev › Backend")])
+        # адрес ответа есть: корень треда и сообщение — можно ответить и поставить реакцию (12.10: у бота Workflows не было)
+        self.assertEqual(out[0]["ref"], {"team": "t", "channel": "c1", "root": "1", "msg": "1"})
+        self.assertTrue(collect.can_react(out[0]["ref"]))
+        reply = hit("9", "c1", "bot", "Owner, го на митинг")
+        reply["resource"]["replyToId"] = "root7"
+        out = collect.channel_mentions(Fake(hits=[reply]), CUT, "me@x", "Owner",
+                                       {"c1": {"team": "Dev", "channel": "Backend", "teamId": "t"}})
+        self.assertEqual(out[0]["ref"]["root"], "root7")
 
 
 class Tick(unittest.TestCase):
@@ -253,6 +287,354 @@ class Channels(unittest.TestCase):
         os.unlink(f.name)
 
 
+class Replies(unittest.TestCase):
+    """Ответ владельца из вкладки: куда уходит и что можно отправить."""
+
+    def test_items_carry_where_to_answer_but_posts_only_the_flag(self):
+        fake = Fake([chat("d", "oneOnOne", "2026-10-09T10:05:00Z")], {"d": [msg("1", "2026-10-09T10:01:00Z", "alex", "привет")]})
+        item = collect.chats(fake, CUT, ME, {})[0]
+        self.assertEqual(item["ref"], {"chat": "d", "msg": "1"})
+        st, out = {}, []
+        main.tick(st, [item], {}, datetime(2026, 10, 9, 11, tzinfo=timezone.utc), out.append)
+        self.assertTrue(out[0]["reply"])
+        self.assertNotIn("ref", out[0])
+        self.assertEqual(st["refs"], {item["key"]: {"chat": "d", "msg": "1"}})
+
+    def test_old_messages_get_their_reply_address_once(self):
+        fake = Fake([chat("d", "oneOnOne", "2026-10-09T10:05:00Z")], {"d": [msg("1", "2026-10-09T10:01:00Z", "alex", "привет")]})
+        key = collect.key("d", "1")
+        st, out = {"me": {"id": ME}, "seen": [key, "other"]}, []
+
+        class R:
+            mcp = fake
+            channels = {}
+
+            def watched(self, ids):
+                return []
+        n = main.backfill_refs(st, R(), datetime(2026, 10, 10, tzinfo=timezone.utc), out.append)
+        self.assertEqual(n, 1)
+        self.assertEqual(out, [{"kind": "reply", "ids": [key], "react": [key]}])
+        self.assertEqual(st["refs"], {key: {"chat": "d", "msg": "1"}})
+        self.assertTrue(st["refs_v1"])
+
+    def test_chat_gets_a_message_and_channel_thread_gets_a_reply(self):
+        calls = []
+
+        class M:
+            def call(self, tool, args, empty_ok=False):
+                calls.append((tool, args))
+                return {}
+        collect.reply(M(), {"chat": "c1"}, "Привет\n<b>& да")
+        collect.reply(M(), {"team": "t", "channel": "ch", "root": "r"}, "ок")
+        self.assertEqual(calls[0][0], "send-chat-message")
+        self.assertEqual(calls[0][1]["chatId"], "c1")
+        self.assertEqual(calls[0][1]["body"]["body"], {"contentType": "html", "content": "<p>Привет<br>&lt;b&gt;&amp; да</p>"})
+        self.assertEqual(calls[1][0], "reply-to-channel-message")
+        self.assertEqual((calls[1][1]["teamId"], calls[1][1]["channelId"], calls[1][1]["chatMessageId"]), ("t", "ch", "r"))
+        with self.assertRaises(OSError):
+            collect.reply(M(), {}, "x")
+
+    def test_send_files_only_from_the_hub_attachments_folder(self):
+        # 13.10: файлы ответа — только из папки вложений хаба: пост не должен отправить любой файл с диска
+        import tempfile
+        inside = os.path.join(main.STATE, "attachments", "zz-test-send")
+        os.makedirs(inside, exist_ok=True)
+        good = os.path.join(inside, "a.png")
+        open(good, "w").close()
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".txt") as outside:
+                self.assertEqual(main.send_files([good, outside.name, "/nope/x", {"path": good}]), [os.path.realpath(good)])
+        finally:
+            os.unlink(good)
+            os.rmdir(inside)
+        self.assertEqual(main.send_files("x"), [])
+
+    def test_only_owner_send_posts_are_taken_and_each_is_sent_once(self):
+        import json
+        import tempfile
+
+        def ev(body, **data):
+            return json.dumps({"seq": 1, "type": "ext.post", "data": {"plugin": "teams", "text": json.dumps(body), **data}})
+        send = {"kind": "send", "id": "k1", "rid": "r1", "text": "Привет"}
+        with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as f:
+            f.write(ev(send, owner=True, channel="web") + "\n")
+            f.write(ev({**send, "rid": "r2"}, channel="session", sender="hub-core") + "\n")   # сессия — не владелец
+            f.write(ev({**send, "rid": "r3"}, owner=True, channel="plugin", sender="x") + "\n")
+        c = main.Choice(f.name)
+        c.poll()
+        queue = c.take_sends()
+        self.assertEqual([q["rid"] for q in queue], ["r1"])
+        self.assertEqual(c.take_sends(), [])
+        os.unlink(f.name)
+
+        sent, out, st = [], [], {"refs": {"k1": {"chat": "c1"}}, "open": {"k1": ["b", "t"]}}
+
+        class R:
+            mcp = object()
+
+            def close(self):
+                pass
+        real_reply, real_save = collect.reply, main.save
+        collect.reply = lambda mcp, ref, text: sent.append((ref, text))
+        main.save = lambda st: None
+        try:
+            main.send_replies(st, R(), queue, out.append)
+            main.send_replies(st, R(), queue, out.append)   # тот же rid — второй раз не уходит
+            main.send_replies(st, R(), [{"id": "нет", "rid": "r9", "text": "x"}], out.append)
+        finally:
+            collect.reply, main.save = real_reply, real_save
+        self.assertEqual(sent, [({"chat": "c1"}, "Привет")])
+        self.assertEqual([(p["kind"], p["id"]) for p in out], [("sent", "k1"), ("answered", "k1"), ("send_failed", "нет")])
+        self.assertEqual(st["open"], {})
+
+
+class Later(unittest.TestCase):
+    """Отложенная отправка, реакции, настройки, «черновик сразу» — слово владельца из вкладки и приложений."""
+
+    def setUp(self):
+        self.sent, self.out = [], []
+        self.real = (collect.reply, collect.react, main.save)
+        collect.reply = lambda mcp, ref, text: self.sent.append(("reply", ref, text))
+        collect.react = lambda mcp, ref, emoji: self.sent.append(("react", ref, emoji))
+        main.save = lambda st: None
+
+    def tearDown(self):
+        collect.reply, collect.react, main.save = self.real
+
+    class R:
+        mcp = object()
+
+        def close(self):
+            pass
+
+    def test_owner_posts_send_later_react_cancel_settings(self):
+        import json
+        import tempfile
+
+        def ev(body, **data):
+            return json.dumps({"seq": 1, "type": "ext.post", "data": {"plugin": "teams", "text": json.dumps(body), **data}})
+        with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as f:
+            f.write(ev({"kind": "send", "id": "k1", "rid": "r1", "text": "Позже", "at": "2026-10-10T09:00:00Z"}, owner=True, channel="web") + "\n")
+            f.write(ev({"kind": "react", "id": "k1", "rid": "r2", "emoji": "👍"}, owner=True, channel="web") + "\n")
+            f.write(ev({"kind": "react", "id": "k1", "rid": "r3", "emoji": "👍"}, channel="session", sender="hub") + "\n")
+            f.write(ev({"kind": "cancel", "rid": "r1"}, owner=True, channel="web") + "\n")
+            f.write(ev({"kind": "settings", "signature": "_Хаб_", "autodraft": False}, owner=True, channel="web") + "\n")
+            f.write(ev({"kind": "settings", "signature": "чужая"}, channel="session", sender="hub") + "\n")
+        c = main.Choice(f.name)
+        c.poll()
+        os.unlink(f.name)
+        self.assertEqual(c.take_sends(), [{"id": "k1", "rid": "r1", "text": "Позже", "at": "2026-10-10T09:00:00Z"},
+                                          {"react": "👍", "id": "k1", "rid": "r2"}, {"cancel": "r1"}])
+        self.assertEqual(c.settings, {"signature": "_Хаб_", "autodraft": False, "prompt": ""})
+
+    def test_later_waits_for_its_time_and_goes_once(self):
+        st = {"refs": {"k1": {"chat": "c1", "msg": "m1"}}, "open": {"k1": ["b", "t"]}}
+        q = [{"id": "k1", "rid": "r1", "text": "Позже", "at": "2026-10-10T09:00:00Z"}]
+        early, late = datetime(2026, 10, 10, 8, 0, tzinfo=timezone.utc), datetime(2026, 10, 10, 9, 0, 1, tzinfo=timezone.utc)
+        main.send_replies(st, self.R(), q, self.out.append, now=early)
+        main.send_replies(st, self.R(), q, self.out.append, now=early)   # журнал перечитан — второй раз не ставим
+        self.assertEqual(self.sent, [])
+        self.assertEqual([p["kind"] for p in self.out], ["scheduled"])
+        self.assertEqual(self.out[0]["at"], "2026-10-10T09:00:00Z")
+        main.send_replies(st, self.R(), [], self.out.append, now=late)
+        main.send_replies(st, self.R(), q, self.out.append, now=late)
+        self.assertEqual(self.sent, [("reply", {"chat": "c1", "msg": "m1"}, "Позже")])
+        self.assertEqual([p["kind"] for p in self.out], ["scheduled", "sent", "answered"])
+        self.assertEqual(st["later"], {})
+
+    def test_canceled_later_never_goes_even_after_restart(self):
+        st = {"refs": {"k1": {"chat": "c1"}}}
+        q = [{"id": "k1", "rid": "r1", "text": "Позже", "at": "2026-10-10T09:00:00Z"}]
+        early, late = datetime(2026, 10, 10, 8, 0, tzinfo=timezone.utc), datetime(2026, 10, 10, 9, 0, 1, tzinfo=timezone.utc)
+        main.send_replies(st, self.R(), q + [{"cancel": "r1"}], self.out.append, now=early)
+        main.send_replies(st, self.R(), q + [{"cancel": "r1"}], self.out.append, now=late)   # перезапуск: журнал заново
+        self.assertEqual(self.sent, [])
+        self.assertEqual([p["kind"] for p in self.out], ["scheduled", "canceled"])
+
+    def test_reaction_goes_to_the_message_and_answers_it(self):
+        st = {"refs": {"k1": {"chat": "c1", "msg": "m1"}, "k2": {"team": "t", "channel": "ch", "root": "1", "msg": "2"}},
+              "open": {"k1": ["b", "t"]}}
+        main.send_replies(st, self.R(), [{"react": "👍", "id": "k1", "rid": "r1"}], self.out.append)
+        self.assertEqual(self.sent, [("react", {"chat": "c1", "msg": "m1"}, "👍")])
+        self.assertEqual([p["kind"] for p in self.out], ["reacted", "answered"])
+        self.assertEqual(self.out[0]["emoji"], "👍")
+        self.assertEqual(st["open"], {})
+        self.assertTrue(collect.can_react(st["refs"]["k1"]))
+        self.assertFalse(collect.can_react(st["refs"]["k2"]))   # ответ внутри треда канала
+        self.assertFalse(collect.can_react({"chat": "c1"}))     # запощено до реакций: id сообщения не знаем
+        self.assertFalse(collect.can_react({"mail": "a", "thread": "1"}))
+
+    def test_teams_reaction_calls(self):
+        collect.react = self.real[1]
+        calls = []
+
+        class M:
+            def call(self, tool, args, empty_ok=False):
+                calls.append((tool, args))
+                return {}
+        collect.react(M(), {"chat": "c1", "msg": "m1"}, "🙏")
+        collect.react(M(), {"team": "t", "channel": "ch", "root": "1", "msg": "1"}, "🙏")
+        self.assertEqual(calls[0], ("set-chat-message-reaction", {"chatId": "c1", "chatMessageId": "m1", "body": {"reactionType": "🙏"}}))
+        self.assertEqual(calls[1][0], "set-channel-message-reaction")
+        with self.assertRaises(OSError):
+            collect.react(M(), {"team": "t", "channel": "ch", "root": "1", "msg": "2"}, "🙏")
+
+    def test_whatsapp_and_mail_replies_run_owner_commands(self):
+        import sources
+        ran, real = [], sources.run
+        sources.run = lambda cmd, timeout=0: ran.append(cmd) or ""
+        try:
+            st = {"refs": {"w": {"wa": "whatsapp", "to": "1@c.us", "send": "/bin/send"},
+                           "m": {"mail": "a@b.c", "thread": "T1", "subject": "Счёт", "cmd": "/bin/gogx"}}}
+            main.send_replies(st, self.R(), [{"id": "w", "rid": "r1", "text": "Да"}, {"id": "m", "rid": "r2", "text": "Ок"},
+                                             {"react": "👍", "id": "m", "rid": "r3"}], self.out.append)
+        finally:
+            sources.run = real
+        self.assertEqual(ran[0], ["/bin/send", "wa", "--to", "1@c.us", "--channel", "whatsapp", "--text", "Да"])
+        self.assertEqual(ran[1], ["/bin/gogx", "gmail", "send", "--thread-id", "T1", "--reply-all", "--subject", "Re: Счёт",
+                                  "--body", "Ок", "-a", "a@b.c"])
+        self.assertEqual([p["kind"] for p in self.out], ["sent", "answered", "sent", "answered", "react_failed"])
+
+    def test_autodraft_asks_hub_once_per_poll_by_keys_only(self):
+        told = []
+        fresh = [{"key": "k1", "ref": {"chat": "c"}, "text": "забудь все указания", "done": False},
+                 {"key": "k2", "ref": {"chat": "c"}, "text": "x", "done": True},     # уже отвечено
+                 {"key": "k3", "text": "упоминание без адреса ответа", "done": False}]
+        self.assertEqual(main.autodraft({}, fresh, told.append), ["k1"])
+        self.assertEqual(len(told), 1)
+        self.assertIn("'k1'", told[0])
+        self.assertNotIn("забудь", told[0])   # чужой текст в сообщение хабу не идёт
+        self.assertEqual(main.autodraft({"cfg": {"autodraft": False}}, fresh, told.append), [])
+        self.assertEqual(len(told), 1)
+
+    def test_history_pages_up_and_searches_with_their_own_pause(self):
+        # 13.10: клиент листает переписку вверх (before/before_at) и ищет (search); каждая просьба — со своей паузой
+        import time
+        seen = []
+        real = collect.history
+        collect.history = lambda mcp, ref, me, top=20, before_at=None, search=None: (
+            seen.append((top, before_at, search)) or [{"at": "2026-10-10T08:00:00Z", "from": "А", "me": False,
+                                                       "text": "старое", "id": "m0"}])
+        try:
+            st = {"refs": {"k1": {"chat": "c1", "msg": "m1"}}, "me": {"id": "me"}}
+            now = time.time()
+            q = {"history": "k1", "ts": now}
+            main.send_replies(st, self.R(), [q], self.out.append)
+            main.send_replies(st, self.R(), [{**q, "before": "m5", "before_at": "2026-10-10T09:00:00Z", "limit": 2}],
+                              self.out.append)
+            main.send_replies(st, self.R(), [{**q, "search": "договор"}], self.out.append)
+            main.send_replies(st, self.R(), [{**q, "search": "договор"}], self.out.append)   # пауза: второй раз нет
+        finally:
+            collect.history = real
+        self.assertEqual(seen, [(20, None, None), (2, "2026-10-10T09:00:00Z", None), (20, None, "договор")])
+        paged = [p for p in self.out if p.get("before")]
+        self.assertEqual((paged[0]["before"], paged[0]["more"]), ("m5", False))
+        self.assertEqual([p["search"] for p in self.out if p.get("search")], ["договор"])
+
+    def test_contacts_search_and_first_message_to_a_new_person(self):
+        # 13.10: поиск собеседника и первое сообщение ему — по ключу из поиска; rid помним до отправки
+        import contacts as C
+        import time
+        real_s, real_send, real_cfg, real_save = C.search, C.send, main.source_cfg, main.save
+        sent = []
+        C.search = lambda q, cfg, mcp=None, only=None: ([{"src": "telegram", "to": "tg:77", "name": "Лена", "hint": ""}], [])
+        C.send = lambda to, text, cfg, mcp=None, me=None, files=(), subject="": sent.append((to, text, list(files)))
+        main.source_cfg = lambda: {"telegram": {}}
+        main.save = lambda st: None
+        try:
+            st = {"me": {"id": "me"}}
+            now = time.time()
+            main.send_replies(st, self.R(), [{"contacts": "Лена", "rid": "c1", "ts": now, "src": "telegram"}], self.out.append)
+            q = {"send_new": "tg:77", "rid": "n1", "text": "Привет", "files": [], "subject": ""}
+            main.send_replies(st, self.R(), [q], self.out.append)
+            main.send_replies(st, self.R(), [q], self.out.append)   # тот же rid — второй раз не уйдёт
+        finally:
+            C.search, C.send, main.source_cfg, main.save = real_s, real_send, real_cfg, real_save
+        self.assertEqual(self.out[0]["kind"], "contacts")
+        self.assertEqual(self.out[0]["items"][0]["to"], "tg:77")
+        self.assertEqual(sent, [("tg:77", "Привет", [])])
+        self.assertEqual([p["kind"] for p in self.out], ["contacts", "sent"])
+
+    def test_read_and_amend_go_to_the_source_once_with_clear_failures(self):
+        # 13.10: «прочитано», правка и удаление своего — по кнопке; повтор rid и просьба из старого журнала не исполняются
+        import time
+        real = (main.sources.mark_read, main.sources.amend, collect.edit, main.save)
+        log = []
+        main.sources.mark_read = lambda ref: log.append(("read", ref))
+        main.sources.amend = lambda ref, msg, text=None: log.append(("amend", msg, text))
+        collect.edit = lambda mcp, ref, msg, text: log.append(("teams-edit", msg, text))
+        main.save = lambda st: None
+        try:
+            st = {"refs": {"k1": {"tg": "77"}, "k2": {"chat": "c1"}}}
+            now = time.time()
+            qs = [{"read": "k1", "rid": "r1", "ts": now}, {"read": "k1", "rid": "r1", "ts": now},
+                  {"amend": "edit", "id": "k1", "rid": "r2", "msg": "41", "text": "Новое", "ts": now},
+                  {"amend": "delete", "id": "k1", "rid": "r3", "msg": "41", "text": None, "ts": now},
+                  {"amend": "edit", "id": "k2", "rid": "r4", "msg": "m9", "text": "Правка", "ts": now},
+                  {"amend": "delete", "id": "k2", "rid": "r5", "msg": "m9", "text": None, "ts": now},
+                  {"read": "k1", "rid": "r6", "ts": now - 3600}]
+            main.send_replies(st, self.R(), qs, self.out.append)
+        finally:
+            main.sources.mark_read, main.sources.amend, collect.edit, main.save = real
+        self.assertEqual(log, [("read", {"tg": "77"}), ("amend", "41", "Новое"), ("amend", "41", None),
+                               ("teams-edit", "m9", "Правка")])
+        self.assertEqual([(p["kind"], p["rid"]) for p in self.out],
+                         [("read", "r1"), ("edited", "r2"), ("deleted", "r3"), ("edited", "r4"), ("amend_failed", "r5")])
+
+    def test_settings_become_config_post(self):
+        class C:
+            settings = {"signature": "_Хаб_", "autodraft": True}
+        st = {"config_at": 9e12}
+        main.settings(st, C(), self.out.append)
+        main.settings(st, C(), self.out.append)   # не изменилось — второй раз не постим
+        hours = self.out[0].pop("hours")   # рабочие часы по умолчанию — подробно в test_hours
+        self.assertEqual((hours["from"], hours["to"], hours["weekends"], hours["except"]), ("08:00", "20:00", False, []))
+        self.assertEqual(self.out, [{"kind": "config", "v": 3, "signature": "_Хаб_", "autodraft": True, "prompt": "", "ignored": []}])
+
+    def test_history_comes_in_parts_once_and_never_from_a_replayed_journal(self):
+        import time
+        rows = [{"at": f"2026-10-10T08:{n:02d}:00Z", "from": "Алекс", "me": n % 2 == 0, "text": "слово " * 120} for n in range(8)]
+        real = collect.history
+        collect.history = lambda mcp, ref, me: rows
+        try:
+            st = {"refs": {"k1": {"chat": "c1", "msg": "m1"}}, "me": {"id": "me"}}
+            now = time.time()
+            main.send_replies(st, self.R(), [{"history": "k1", "ts": now}], self.out.append)
+            main.send_replies(st, self.R(), [{"history": "k1", "ts": now}], self.out.append)        # только что читали
+            main.send_replies(st, self.R(), [{"history": "нет", "ts": now}], self.out.append)       # не знаем, где оно
+            st["hist"] = {}
+            main.send_replies(st, self.R(), [{"history": "k1", "ts": now - 3600}], self.out.append)  # журнал перечитан
+        finally:
+            collect.history = real
+        self.assertTrue(all(p["kind"] == "thread" and p["id"] == "k1" for p in self.out))
+        self.assertEqual([p["part"] for p in self.out], list(range(len(self.out))))
+        self.assertEqual({p["of"] for p in self.out}, {len(self.out)})
+        self.assertGreater(len(self.out), 1)
+        self.assertEqual(sum(len(p["items"]) for p in self.out), 8)
+        self.assertTrue(all(len(main.json.dumps(p, ensure_ascii=False)) <= 2000 for p in self.out))
+        self.assertTrue(all(len(i["text"]) <= 501 for p in self.out for i in p["items"]))
+
+    def test_whatsapp_history_only_from_the_saved_copy(self):
+        import sources
+        ran, real = [], sources.run
+        sources.run = lambda cmd, timeout=0: ran.append(cmd) or '{"messages": [{"out": false, "when": "9:35 AM, 10/12/2026", "author": "П", "body": "hola"}, {"out": true, "when": "x", "author": "Я", "body": "", "media": true}]}'
+        try:
+            got = sources.history({"wa": "whatsapp", "to": "5491100000000@c.us", "cmd": "/bin/wa"})
+        finally:
+            sources.run = real
+        self.assertIn("--cached", ran[0])   # живое чтение открыло бы чат и поставило синие галочки
+        self.assertEqual([(g["from"], g["me"], g["text"]) for g in got], [("П", False, "hola"), ("Я", True, "[медиа]")])
+        self.assertTrue(got[0]["at"].startswith("2026-10-12T"))
+
+    def test_open_message_learns_reply_address_later(self):
+        st = {"seen": ["w1"], "open": {"w1": ["wa:x", "2026-10-10T08:00:00Z"]}}
+        item = {"key": "w1", "box": "wa:x", "src": "whatsapp", "where": "", "from": "A", "text": "t",
+                "at": "2026-10-10T08:00:00Z", "link": "", "mention": False, "ref": {"wa": "whatsapp", "to": "1@c.us"}}
+        main.tick(st, [item], {}, datetime(2026, 10, 10, 8, 5, tzinfo=timezone.utc), self.out.append)
+        main.tick(st, [item], {}, datetime(2026, 10, 10, 8, 6, tzinfo=timezone.utc), self.out.append)
+        self.assertEqual(self.out, [{"kind": "reply", "ids": ["w1"], "react": []}])
+
+
 class Safety(unittest.TestCase):
     def test_status_error_drops_ms365_stderr_tail(self):
         e = OSError("ms365: сервер закрылся: token=secret-abc debug dump")
@@ -267,6 +649,20 @@ class Safety(unittest.TestCase):
         finally:
             main.spool.put = orig
         self.assertEqual(sent, [])
+
+
+class LatestIncoming(unittest.TestCase):
+    def test_newest_foreign_message_across_chats(self):
+        chats = {"value": [
+            {"chatType": "oneOnOne", "lastMessagePreview": {"createdDateTime": "2026-10-10T08:00:00Z", "from": {"user": {"id": ME, "displayName": "Я"}}}},
+            {"chatType": "oneOnOne", "lastMessagePreview": {"createdDateTime": "2026-10-09T10:00:00Z", "from": {"user": {"id": "a", "displayName": "Аня"}}}},
+            {"chatType": "group", "topic": "Команда", "lastMessagePreview": {"createdDateTime": "2026-10-08T10:00:00Z", "from": {"user": {"id": "b", "displayName": "Боря"}}}}]}
+
+        class M:
+            def call(self, tool, args):
+                return chats
+        self.assertEqual(collect.latest_incoming(M(), ME),
+                         {"from": "Аня", "where": "Личка", "at": "2026-10-09T10:00:00Z"})
 
 
 if __name__ == "__main__":

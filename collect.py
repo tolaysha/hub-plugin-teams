@@ -35,6 +35,54 @@ def plain(body):
     return s if len(s) <= TEXT_MAX else s[:TEXT_MAX].rstrip() + "…"
 
 
+_TZ = re.compile(r"\s*[\[(]\s*(?:UTC|GMT)\s*[+\-\u2212]\s*\d{1,2}(?::?\d{2})?\s*[\])]\s*")
+
+
+_EXT = {"image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp", "video/mp4": "mp4"}
+HOSTED = re.compile(r"/hostedContents/([^/\"'?]+)/\$value")
+
+
+def attachments(mcp, m, chat, keep=4):
+    """Вложения сообщения Teams (13.10): картинки из тела (hostedContents) скачиваются Graph-вызовом в attachments хаба и
+    отдаются как media[]; файлы-ссылки (SharePoint/OneDrive, attachments[].contentType == reference) — в links[]: байты
+    за входом Microsoft, откроются в самом Teams. Не скачалось — вложения нет (сообщение остаётся)."""
+    import os
+    from urllib.parse import quote
+    import sources
+    media, links = [], []
+    for hid in list(dict.fromkeys(HOSTED.findall((m.get("body") or {}).get("content") or "")))[:keep]:
+        d = sources.media_dir("teams")
+        base = hashlib.sha1(f"{chat}:{m.get('id')}:{hid}".encode()).hexdigest()[:20]
+        have = next((f for f in os.listdir(d) if f.startswith(base + ".")), None)
+        if have is None:
+            path = os.path.join(d, base + ".png")   # расширение уточним по contentType ответа
+            try:
+                got = mcp.call("download-bytes-to-file",
+                               {"target": f"/chats/{chat}/messages/{m['id']}/hostedContents/{hid}/$value", "outputPath": path})
+                ext = _EXT.get(str(got.get("contentType") or "").split(";")[0].lower(), "png")
+                if ext != "png" and os.path.exists(path):
+                    os.replace(path, os.path.join(d, f"{base}.{ext}"))
+                    path = os.path.join(d, f"{base}.{ext}")
+                have = os.path.basename(path) if os.path.exists(path) else None
+            except OSError:
+                have = None
+        if have:
+            ext = have.rsplit(".", 1)[-1]
+            mime = next((k for k, v in _EXT.items() if v == ext), "image/png")
+            media.append({"id": f"teams:{m.get('id')}:{hid[:12]}", "kind": "video" if mime.startswith("video") else "image",
+                          "name": have, "mime": mime, "url": "/api/file?path=" + quote(os.path.join(d, have), safe="")})
+    for a in m.get("attachments") or []:
+        if a.get("contentType") == "reference" and a.get("contentUrl"):
+            links.append({"url": a["contentUrl"], "title": a.get("name") or "", "site": "Teams"})
+    return media, links[:3]
+
+
+def person(name):
+    """Имя человека без часового пояса: «Anthony Minkowski [UTC-03:00]» → «Anthony Minkowski» (12.10)."""
+    s = _TZ.sub(" ", name or "").strip()
+    return s or (name or "")
+
+
 def sender(m):
     return ((m.get("from") or {}).get("user") or {})
 
@@ -108,12 +156,17 @@ def chats(mcp, cutoff, me, owner_last, top=30, reacted=None, scan=None):
             if not (dm or mention or reply):
                 continue
             text = plain((m.get("body") or {}).get("content"))
-            if not text or (not (mention or reply) and chatter(text)):   # «да» цитатой на его вопрос — ответ
+            media, links = attachments(mcp, m, c["id"])
+            if not text and not media and not links:
+                continue
+            if text and not media and not links and not (mention or reply) and chatter(text):   # «да» цитатой на его вопрос — ответ
                 continue
             out.append({"key": key(c["id"], m["id"]), "box": box, "src": "dm" if dm else "mention",
                         "where": "Личка" if dm else (c.get("topic") or "Групповой чат"),
                         "from": sender(m).get("displayName") or "", "text": text, "at": m["createdDateTime"],
-                        "link": m.get("webUrl") or c.get("webUrl") or "", "mention": mention})
+                        **({"media": media} if media else {}), **({"links": links} if links else {}),
+                        "link": m.get("webUrl") or c.get("webUrl") or "", "mention": mention,
+                        "ref": {"chat": c["id"], "msg": m["id"]}})   # ref — куда отвечать и на что ставить реакцию (в посте не уходит)
     return out
 
 
@@ -155,7 +208,8 @@ def channel_posts(mcp, channel, info, cutoff, me, owner_last, top=10, reacted=No
             out.append({"key": key(channel, m["id"]), "box": box, "src": "channel" if m is root else "mention",
                         "where": label + (f" · {thread}" if m is not root else ""),
                         "from": sender(m).get("displayName") or "", "text": text, "at": m["createdDateTime"],
-                        "link": m.get("webUrl") or "", "mention": mention})
+                        "link": m.get("webUrl") or "", "mention": mention,
+                        "ref": {"team": team, "channel": channel, "root": root["id"], "msg": m["id"]}})
     return out
 
 
@@ -191,5 +245,108 @@ def channel_mentions(mcp, cutoff, me_mail, name, channels=None, skip=(), size=25
             out.append({"key": key(ch["channelId"], r.get("id")), "box": None, "src": "mention",
                         "where": f"{c['team']} › {c['channel']}" if c else "Канал Teams",
                         "from": mail.get("name") or "", "text": summary, "at": r["createdDateTime"],
-                        "link": r.get("webLink") or "", "mention": True})
+                        "link": r.get("webLink") or "", "mention": True,
+                        # куда отвечать: поиск отдаёт канал и сообщение; корень треда — replyToId (иначе само сообщение —
+                        # корень). Без адреса запись была без «Ответить» и реакции (владелец 12.10, бот Workflows)
+                        **({"ref": {"team": c["teamId"], "channel": ch["channelId"],
+                                    "root": r.get("replyToId") or r.get("id"), "msg": r.get("id")}}
+                           if c and c.get("teamId") and r.get("id") else {})})
     return out
+
+
+def html_body(text):
+    """Текст ответа → тело сообщения Teams: обычный текст Graph портит, поэтому html с экранированием."""
+    return {"body": {"contentType": "html",
+                     "content": "<p>" + html.escape(text.strip()).replace("\n", "<br>") + "</p>"}}
+
+
+def reply(mcp, ref, text):
+    """Ответ владельца в ту же переписку: чат — новым сообщением в чат, канал — ответом в тред (root)."""
+    body = html_body(text)
+    if ref.get("chat"):
+        return mcp.call("send-chat-message", {"chatId": ref["chat"], "body": body}, empty_ok=True)
+    if ref.get("team") and ref.get("channel") and ref.get("root"):
+        return mcp.call("reply-to-channel-message", {"teamId": ref["team"], "channelId": ref["channel"],
+                                                     "chatMessageId": ref["root"], "body": body}, empty_ok=True)
+    raise OSError("не знаю, куда отвечать на это сообщение")
+
+
+def edit(mcp, ref, msg, text):
+    """Правка своего сообщения в чате Teams (Graph PATCH). Удаление через этот сервер недоступно (нет softDelete)."""
+    if ref.get("chat") and msg:
+        return mcp.call("update-chat-message", {"chatId": ref["chat"], "chatMessageId": msg,
+                                                "body": {"body": {"contentType": "html", "content": html_body(text)}}},
+                        empty_ok=True)
+    raise OSError("это сообщение изменить нельзя")
+
+
+def can_react(ref):
+    """На что можно поставить реакцию: сообщение чата и первое сообщение треда канала (ответу в треде Graph реакцию
+    этим вызовом не ставит); WhatsApp — когда в sources.json задана команда реакции."""
+    ref = ref or {}
+    if ref.get("wa"):
+        return bool(ref.get("react"))
+    if ref.get("tg"):
+        return True
+    if ref.get("chat"):
+        return bool(ref.get("msg"))
+    return bool(ref.get("root")) and ref.get("msg") == ref.get("root")
+
+
+def react(mcp, ref, emoji, msg=None):
+    """Реакция владельца на сообщение: эмодзи как есть (Graph: reactionType — символ Unicode). msg — id конкретного
+    сообщения чата (из переписки), иначе то, на которое пришёл пост."""
+    body = {"reactionType": emoji}
+    if ref.get("chat") and (msg or ref.get("msg")):
+        return mcp.call("set-chat-message-reaction", {"chatId": ref["chat"], "chatMessageId": msg or ref["msg"],
+                                                      "body": body}, empty_ok=True)
+    if ref.get("team") and ref.get("channel") and ref.get("root") and ref.get("msg") == ref["root"]:
+        return mcp.call("set-channel-message-reaction", {"teamId": ref["team"], "channelId": ref["channel"],
+                                                         "chatMessageId": ref["root"], "body": body}, empty_ok=True)
+    raise OSError("на это сообщение реакцию поставить нельзя")
+
+
+def history(mcp, ref, me, top=20, before_at=None, search=None):
+    """Переписка вокруг сообщения — для «всей переписки» во вкладке: последние сообщения чата или тред канала (первое
+    сообщение и ответы). Чтение через Graph ничего не отмечает прочитанным. [{at, from, me, text}] по времени."""
+    if ref.get("chat"):
+        args = {"chatId": ref["chat"], "top": top}
+        if search:   # поиск Graph по тексту чата; с filter не сочетается
+            args["search"] = '"' + search.replace('"', " ") + '"'
+        else:
+            args["orderby"] = "createdDateTime desc"
+            if before_at:   # листание вверх: сообщения старше последнего показанного
+                args["filter"] = f"createdDateTime lt {before_at}"
+        rows = mcp.call("list-chat-messages", args).get("value", [])
+    elif ref.get("team") and ref.get("channel") and ref.get("root"):
+        args = {"teamId": ref["team"], "channelId": ref["channel"], "chatMessageId": ref["root"]}
+        rows = [mcp.call("get-channel-message", args)] + mcp.call("list-channel-message-replies", {**args, "top": top}).get("value", [])
+    else:
+        return []
+    out = []
+    for m in rows:
+        who, text = sender(m), plain((m.get("body") or {}).get("content"))
+        if m.get("messageType") != "message" or m.get("deletedDateTime") or not who.get("id") or not text:
+            continue
+        out.append({"at": m.get("createdDateTime") or "", "from": who.get("displayName") or "", "me": who["id"] == me,
+                    "text": text, **({"id": str(m["id"])} if m.get("id") else {})})
+    return sorted(out, key=lambda x: x["at"])[-top:]
+
+
+def latest_incoming(mcp, me, top=30):
+    """Самое свежее чужое сообщение среди последних чатов (по превью) — доказательство во вкладке, что чтение идёт, а
+    нового просто нет: {from, where, at} или None."""
+    data = mcp.call("list-chats", {"$top": top, "$expand": "lastMessagePreview",
+                                   "$orderby": "lastMessagePreview/createdDateTime desc"})
+    best = None
+    for c in data.get("value", []):
+        p = c.get("lastMessagePreview") or {}
+        who = ((p.get("from") or {}).get("user") or {})
+        at = p.get("createdDateTime") or ""
+        if not at or not who.get("id") or who["id"] == me or p.get("deletedDateTime"):
+            continue
+        if best is None or at > best["at"]:
+            best = {"from": who.get("displayName") or "",
+                    "where": "Личка" if c.get("chatType") == "oneOnOne" else (c.get("topic") or "Групповой чат"),
+                    "at": at}
+    return best
