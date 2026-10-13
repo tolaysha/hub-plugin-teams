@@ -441,6 +441,30 @@ class Later(unittest.TestCase):
         self.assertEqual(main.autodraft({"cfg": {"autodraft": False}}, fresh, told.append), [])
         self.assertEqual(len(told), 1)
 
+    def test_history_pages_up_and_searches_with_their_own_pause(self):
+        # 13.10: клиент листает переписку вверх (before/before_at) и ищет (search); каждая просьба — со своей паузой
+        import time
+        seen = []
+        real = collect.history
+        collect.history = lambda mcp, ref, me, top=20, before_at=None, search=None: (
+            seen.append((top, before_at, search)) or [{"at": "2026-10-10T08:00:00Z", "from": "А", "me": False,
+                                                       "text": "старое", "id": "m0"}])
+        try:
+            st = {"refs": {"k1": {"chat": "c1", "msg": "m1"}}, "me": {"id": "me"}}
+            now = time.time()
+            q = {"history": "k1", "ts": now}
+            main.send_replies(st, self.R(), [q], self.out.append)
+            main.send_replies(st, self.R(), [{**q, "before": "m5", "before_at": "2026-10-10T09:00:00Z", "limit": 2}],
+                              self.out.append)
+            main.send_replies(st, self.R(), [{**q, "search": "договор"}], self.out.append)
+            main.send_replies(st, self.R(), [{**q, "search": "договор"}], self.out.append)   # пауза: второй раз нет
+        finally:
+            collect.history = real
+        self.assertEqual(seen, [(20, None, None), (2, "2026-10-10T09:00:00Z", None), (20, None, "договор")])
+        paged = [p for p in self.out if p.get("before")]
+        self.assertEqual((paged[0]["before"], paged[0]["more"]), ("m5", False))
+        self.assertEqual([p["search"] for p in self.out if p.get("search")], ["договор"])
+
     def test_settings_become_config_post(self):
         class C:
             settings = {"signature": "_Хаб_", "autodraft": True}

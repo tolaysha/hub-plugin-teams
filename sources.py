@@ -625,14 +625,26 @@ def react(ref, emoji, msg=None):
     raise OSError("на это сообщение реакцию поставить нельзя")
 
 
-def history(ref, top=20):
+def page(items, top, before=None, search=None):
+    """Страница переписки из полного списка по времени: старше сообщения `before` (id), с текстом `search`; последние top."""
+    if before:
+        ids = [str(i.get("id")) for i in items]
+        if str(before) in ids:
+            items = items[:ids.index(str(before))]
+    if search:
+        q = search.casefold()
+        items = [i for i in items if q in (i.get("text") or "").casefold() or q in (i.get("from") or "").casefold()]
+    return items[-top:]
+
+
+def history(ref, top=20, before=None, search=None):
     """Переписка для «всей переписки» во вкладке. WhatsApp — только сохранённая копия треда (`--cached`): живое чтение
     открыло бы чат и поставило синие галочки. Почта — письма цепочки: от кого, когда, начало текста."""
     if ref.get("wa"):
         who = ref["to"] if ref["to"].endswith("@g.us") else re.sub(r"\D", "", ref["to"].split("@")[0])
         try:
             data = json.loads(run([ref.get("cmd") or expand("~/.claude/bin/wa"), "thread", who, "--cached", "--json",
-                                   "--limit", str(top), "--channel", ref["wa"]]))
+                                   "--limit", str(500 if before or search else top), "--channel", ref["wa"]]))
         except OSError:
             return []   # копии нет — истории нет; чат ради неё не открываем
         out = []
@@ -645,11 +657,13 @@ def history(ref, top=20):
             if text:
                 out.append({"at": at, "from": m.get("author") or "", "me": bool(m.get("out")), "text": text,
                             **({"id": str(m["id"])} if m.get("id") else {})})
-        return out
+        return page(out, top, before, search)   # копия треда целиком: листание и поиск — по ней
     if ref.get("tg"):
+        extra = (["--before", str(before)] if before and str(before).isdigit() else []) + \
+                (["--search", search] if search else [])
         try:
             data = json.loads(run([ref.get("cmd") or expand("~/.claude/bin/tgnew"), "thread", ref["tg"], "--limit",
-                                   str(top), "--json"]))
+                                   str(top), "--json", *extra]))
         except (OSError, ValueError):
             return []
         msgs = data.get("messages") or []
@@ -679,5 +693,5 @@ def history(ref, top=20):
     if ref.get("mail"):
         out = [{"at": m["at"], "from": m["from"], "me": m["me"], "text": m["text"] or m.get("subject", "")}
                for m in mail_thread(ref["cmd"], ref["mail"], ref["thread"], None)]
-        return out[-top:]
+        return page(out, top, None, search)
     return []

@@ -262,11 +262,18 @@ def react(mcp, ref, emoji, msg=None):
     raise OSError("на это сообщение реакцию поставить нельзя")
 
 
-def history(mcp, ref, me, top=20):
+def history(mcp, ref, me, top=20, before_at=None, search=None):
     """Переписка вокруг сообщения — для «всей переписки» во вкладке: последние сообщения чата или тред канала (первое
     сообщение и ответы). Чтение через Graph ничего не отмечает прочитанным. [{at, from, me, text}] по времени."""
     if ref.get("chat"):
-        rows = mcp.call("list-chat-messages", {"chatId": ref["chat"], "top": top, "orderby": "createdDateTime desc"}).get("value", [])
+        args = {"chatId": ref["chat"], "top": top}
+        if search:   # поиск Graph по тексту чата; с filter не сочетается
+            args["search"] = '"' + search.replace('"', " ") + '"'
+        else:
+            args["orderby"] = "createdDateTime desc"
+            if before_at:   # листание вверх: сообщения старше последнего показанного
+                args["filter"] = f"createdDateTime lt {before_at}"
+        rows = mcp.call("list-chat-messages", args).get("value", [])
     elif ref.get("team") and ref.get("channel") and ref.get("root"):
         args = {"teamId": ref["team"], "channelId": ref["channel"], "chatMessageId": ref["root"]}
         rows = [mcp.call("get-channel-message", args)] + mcp.call("list-channel-message-replies", {**args, "top": top}).get("value", [])

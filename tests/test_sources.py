@@ -144,6 +144,12 @@ class Telegram(unittest.TestCase):
         sources.react(ref, "👍", "41")
         self.assertEqual(calls[2], ["tgnew", "react", "3123499", "41", "--emoji", "👍"])
 
+    def test_page_goes_older_than_a_message_and_searches(self):
+        items = [{"id": str(n), "text": f"сообщение {n}" + (" договор" if n == 3 else ""), "from": "Лена"} for n in range(10)]
+        self.assertEqual([i["id"] for i in sources.page(items, 3, before="5")], ["2", "3", "4"])
+        self.assertEqual([i["id"] for i in sources.page(items, 20, search="ДОГОВОР")], ["3"])
+        self.assertEqual(len(sources.page(items, 4)), 4)
+
     def test_send_refusals_are_human_text(self):
         # 12.10: «Not sent: send failed: TELEGRAM_API_ID / TELEGRAM_API_HASH not set» в интерфейсе — именами переменных
         self.assertNotIn("TELEGRAM_API", sources.human("send failed: TELEGRAM_API_ID / TELEGRAM_API_HASH not set"))

@@ -163,7 +163,10 @@ class Choice:
         elif isinstance(body, dict) and body.get("kind") == "cancel" and isinstance(body.get("rid"), str):
             self.sends.append({"cancel": body["rid"]})
         elif isinstance(body, dict) and body.get("kind") == "history" and isinstance(body.get("id"), str):
-            self.sends.append({"history": body["id"], "ts": ev.get("ts") or 0})
+            self.sends.append({"history": body["id"], "ts": ev.get("ts") or 0,
+                               **{k: str(body[k])[:200] for k in ("before", "before_at", "search") if body.get(k)},
+                               **({"limit": min(max(int(body["limit"]), 1), 50)}
+                                  if isinstance(body.get("limit"), int) and not isinstance(body.get("limit"), bool) else {})})
         elif isinstance(body, dict) and body.get("kind") == "settings":
             self.settings = {"signature": str(body.get("signature") or "")[:300],
                              "autodraft": body.get("autodraft") is not False,
@@ -617,18 +620,23 @@ def history(st, reader, q, put=post, now=None):
     now = now or time.time()
     key, seen = q["history"], st.setdefault("hist", {})
     ref = (st.get("refs") or {}).get(key)
-    if not ref or now - (q.get("ts") or now) > HISTORY_FRESH or now - seen.get(key, 0) < HISTORY_EVERY:
+    before, before_at, search, limit = q.get("before"), q.get("before_at"), q.get("search"), q.get("limit") or 20
+    skey = f"{key}|{before or ''}|{search or ''}"   # листание и поиск — отдельные просьбы со своей паузой
+    if not ref or now - (q.get("ts") or now) > HISTORY_FRESH or now - seen.get(skey, 0) < HISTORY_EVERY:
         return
-    seen[key] = now
+    seen[skey] = now
     for k in [k for k, t in seen.items() if now - t > 86400]:
         del seen[k]
     try:
         if ref.get("wa") or ref.get("mail") or ref.get("tg"):
-            items = sources.history(ref)
+            items = sources.history(ref, limit, before, search)
         else:
             if not reader.mcp:
                 reader.connect(st)
-            items = collect.history(reader.mcp, ref, st["me"]["id"])
+            if before_at or search or limit != 20:   # листание/поиск/свой размер страницы
+                items = collect.history(reader.mcp, ref, st["me"]["id"], limit, before_at, search)
+            else:
+                items = collect.history(reader.mcp, ref, st["me"]["id"])
     except Exception as e:   # noqa: BLE001 — истории нет, сообщение всё равно видно
         reader.close()
         print(f"teams: переписка {key} не прочитана: {e}", file=sys.stderr, flush=True)
@@ -645,7 +653,9 @@ def history(st, reader, q, put=post, now=None):
         size += n
     parts = parts + [cur] if cur or not parts else parts
     for n, part in enumerate(parts):
-        put({"kind": "thread", "id": key, "part": n, "of": len(parts), "items": part})
+        put({"kind": "thread", "id": key, "part": n, "of": len(parts), "items": part,
+             **({"before": before} if before else {}), **({"search": search} if search else {}),
+             "more": len(items) >= limit and not search})   # страница полная — старше, возможно, ещё есть
 
 
 def send_one(st, reader, q, put=post):
