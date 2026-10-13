@@ -198,7 +198,12 @@ def whatsapp(cfg, now):
             boxes.add(box)
             # ключ — последнее ждущее сообщение: то же сообщение второй раз карточкой не станет
             mark = (wait[-1].get("id") if wait else "") or r.get("last")
+            kinds = {m.get("type") for m in wait} | set((r.get("kinds") or {}) if not wait else ())
+            media = wa_media(cfg, ch, cid, f"{box}:{mark}") if kinds & {"image", "sticker"} else []
+            if media and not any(m.get("body") or m.get("text") for m in wait):
+                text = ""   # у картинки без подписи заглушек нет — клиент рисует вложение
             items.append({"key": f"{box}:{mark}", "box": box, "src": "whatsapp", "tier": t,
+                          **({"media": media} if media else {}),
                           "where": labels.get(ch, "WhatsApp") + (" · группа" if group else ""),
                           "from": r.get("name") or digits, "text": text[:1200], "at": iso_utc(last),
                           "link": f"https://wa.me/{digits}" if digits and not group and len(digits) <= 15 else "",
@@ -212,7 +217,8 @@ def whatsapp(cfg, now):
 
 
 # --- вложения сообщений (12.10, «фото, видео, файлы, голосовые — как в мессенджере») -----------------------------------
-MEDIA_KEEP = 6   # у скольких последних сообщений с вложениями тянем файл; у остальных — только описание
+MEDIA_KEEP = 6
+_WA_MEDIA = {}   # ключ поста -> вложения: чат ради картинок открываем один раз на сообщение (синие галочки — слово 13.10)   # у скольких последних сообщений с вложениями тянем файл; у остальных — только описание
 
 
 def _state_dir():
@@ -221,6 +227,28 @@ def _state_dir():
         return d
     from core.daemon import default_state_dir
     return default_state_dir()
+
+
+def wa_media(cfg, ch, cid, key):
+    """Фото и стикеры WhatsApp: `wamedia` открывает чат (владелец 13.10: «синие галочки допустимы») и снимает blob-картинки
+    отрисованной страницы. Видео и голосовые вне прокрутки не отдаются — их тут нет. Нет скрипта/вкладки — без вложений."""
+    from urllib.parse import quote
+    if cfg.get("media") is False:
+        return []
+    if key in _WA_MEDIA:
+        return _WA_MEDIA[key]
+    cmd = expand(cfg.get("media_cmd") or "~/.claude/bin/wamedia")
+    got = []
+    try:
+        rows = json.loads(run([cmd, cid, "--dir", media_dir("wa"), "--channel", ch], timeout=120) or "[]")
+        for m in rows:
+            got.append({"id": f"wa:{cid}:{m['id']}", "kind": m.get("kind") or "image", "name": os.path.basename(m["path"]),
+                        "mime": m.get("mime"), "w": m.get("w"), "h": m.get("h"),
+                        "url": "/api/file?path=" + quote(m["path"], safe="")})
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+        got = []
+    _WA_MEDIA[key] = got
+    return got
 
 
 def media_dir(src):

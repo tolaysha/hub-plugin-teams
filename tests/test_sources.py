@@ -334,6 +334,33 @@ class BetweenSources(unittest.TestCase):
         self.assertEqual(order, ["drain", "whatsapp", "drain", "telegram"])
 
 
+class WaMedia(unittest.TestCase):
+    def test_whatsapp_images_become_media_once_per_message(self):
+        """13.10: владелец разрешил синие галочки — фото/стикеры WhatsApp достаём; чат ради них открываем один раз на пост."""
+        import sources
+        d = tempfile.mkdtemp()
+        os.environ["HUB_STATE_DIR"] = d
+        calls = []
+        orig = sources.run
+
+        def fake(cmd, timeout=0):
+            calls.append(cmd)
+            return json.dumps([{"id": "AB12", "kind": "image", "mime": "image/jpeg", "w": 700, "h": 500,
+                                "path": os.path.join(d, "x.jpg")}])
+        sources.run = fake
+        try:
+            sources._WA_MEDIA.clear()
+            a = sources.wa_media({}, "whatsapp", "5491100000000@c.us", "k1")
+            b = sources.wa_media({}, "whatsapp", "5491100000000@c.us", "k1")
+            self.assertEqual(a, b)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual((a[0]["id"], a[0]["kind"], a[0]["w"]), ("wa:5491100000000@c.us:AB12", "image", 700))
+            self.assertTrue(a[0]["url"].startswith("/api/file?path="))
+            self.assertEqual(sources.wa_media({"media": False}, "whatsapp", "c", "k2"), [])
+        finally:
+            sources.run = orig
+
+
 if __name__ == "__main__":
     unittest.main()
 
