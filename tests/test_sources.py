@@ -129,6 +129,21 @@ class Telegram(unittest.TestCase):
         sources.reply(items[0]["ref"], "Да, вечером")
         self.assertEqual(calls[0][1:], ["tg", "--to", "3123499", "--text", "Да, вечером"])
 
+    def test_reply_carries_files_and_a_native_reply_to(self):
+        # 13.10: ответ с файлами и ответ-цитата на конкретное сообщение; реакция — на выбранное, не на последнее
+        calls = []
+        sources.run = lambda cmd, timeout=0: calls.append(cmd) or ""
+        ref = {"tg": "3123499", "send": "send", "cmd": "tgnew"}
+        sources.reply(ref, "вот", files=["/a/1.png", "/a/2.pdf"], reply_to="42", quote="Пришлёшь?")
+        self.assertEqual(calls[0], ["send", "tg", "--to", "3123499", "--text", "вот", "--file", "/a/1.png",
+                                    "--file", "/a/2.pdf", "--reply-to", "42"])
+        sources.reply({"wa": "whatsapp", "to": "5491@c.us", "send": "send"}, "ок", files=["/a/1.png"],
+                      reply_to="ABC", quote="Во сколько?")
+        self.assertEqual(calls[1], ["send", "wa", "--to", "5491@c.us", "--channel", "whatsapp",
+                                    "--text", "> Во сколько?\nок", "--file", "/a/1.png"])   # WA — цитата текстом
+        sources.react(ref, "👍", "41")
+        self.assertEqual(calls[2], ["tgnew", "react", "3123499", "41", "--emoji", "👍"])
+
     def test_send_refusals_are_human_text(self):
         # 12.10: «Not sent: send failed: TELEGRAM_API_ID / TELEGRAM_API_HASH not set» в интерфейсе — именами переменных
         self.assertNotIn("TELEGRAM_API", sources.human("send failed: TELEGRAM_API_ID / TELEGRAM_API_HASH not set"))

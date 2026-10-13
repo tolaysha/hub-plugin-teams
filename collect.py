@@ -242,16 +242,19 @@ def can_react(ref):
     ref = ref or {}
     if ref.get("wa"):
         return bool(ref.get("react"))
+    if ref.get("tg"):
+        return True
     if ref.get("chat"):
         return bool(ref.get("msg"))
     return bool(ref.get("root")) and ref.get("msg") == ref.get("root")
 
 
-def react(mcp, ref, emoji):
-    """Реакция владельца на сообщение: эмодзи как есть (Graph: reactionType — символ Unicode)."""
+def react(mcp, ref, emoji, msg=None):
+    """Реакция владельца на сообщение: эмодзи как есть (Graph: reactionType — символ Unicode). msg — id конкретного
+    сообщения чата (из переписки), иначе то, на которое пришёл пост."""
     body = {"reactionType": emoji}
-    if ref.get("chat") and ref.get("msg"):
-        return mcp.call("set-chat-message-reaction", {"chatId": ref["chat"], "chatMessageId": ref["msg"],
+    if ref.get("chat") and (msg or ref.get("msg")):
+        return mcp.call("set-chat-message-reaction", {"chatId": ref["chat"], "chatMessageId": msg or ref["msg"],
                                                       "body": body}, empty_ok=True)
     if ref.get("team") and ref.get("channel") and ref.get("root") and ref.get("msg") == ref["root"]:
         return mcp.call("set-channel-message-reaction", {"teamId": ref["team"], "channelId": ref["channel"],
@@ -275,7 +278,7 @@ def history(mcp, ref, me, top=20):
         if m.get("messageType") != "message" or m.get("deletedDateTime") or not who.get("id") or not text:
             continue
         out.append({"at": m.get("createdDateTime") or "", "from": who.get("displayName") or "", "me": who["id"] == me,
-                    "text": text})
+                    "text": text, **({"id": str(m["id"])} if m.get("id") else {})})
     return sorted(out, key=lambda x: x["at"])[-top:]
 
 

@@ -145,11 +145,21 @@ class Choice:
         if ev.get("type") != "ext.post" or d.get("plugin") != NAME or not from_owner(d):
             return
         if isinstance(body, dict) and body.get("kind") == "send":   # только слово владельца: сессии так не отправят
-            if all(isinstance(body.get(k), str) and body[k] for k in ("id", "rid", "text")):
-                self.sends.append({k: body[k] for k in ("id", "rid", "text", "at") if isinstance(body.get(k), str)})
+            files = send_files(body.get("files"))
+            if all(isinstance(body.get(k), str) and body[k] for k in ("id", "rid")) and (
+                    isinstance(body.get("text"), str) and body["text"] or files):
+                q = {k: body[k] for k in ("id", "rid", "at") if isinstance(body.get(k), str)}
+                q["text"] = body["text"] if isinstance(body.get("text"), str) else ""
+                if files:
+                    q["files"] = files
+                for k in ("reply_to", "quote"):   # ответ на конкретное сообщение: его id и текст (для цитаты в источниках без reply)
+                    if isinstance(body.get(k), str) and body[k]:
+                        q[k] = body[k][:1000 if k == "quote" else 200]
+                self.sends.append(q)
         elif isinstance(body, dict) and body.get("kind") == "react":
             if all(isinstance(body.get(k), str) and body[k] for k in ("id", "rid", "emoji")) and len(body["emoji"]) <= 16:
-                self.sends.append({"react": body["emoji"], "id": body["id"], "rid": body["rid"]})
+                self.sends.append({"react": body["emoji"], "id": body["id"], "rid": body["rid"],
+                                   **({"reply_to": body["msg"][:200]} if isinstance(body.get("msg"), str) and body["msg"] else {})})
         elif isinstance(body, dict) and body.get("kind") == "cancel" and isinstance(body.get("rid"), str):
             self.sends.append({"cancel": body["rid"]})
         elif isinstance(body, dict) and body.get("kind") == "history" and isinstance(body.get("id"), str):
@@ -262,6 +272,18 @@ class Reader:
 def contact(i):
     """Кто это для «Не показывать»: источник сам называет (`contact`), иначе переписка/канал (`box`), иначе имя."""
     return str(i.get("contact") or i.get("box") or f"{i.get('src')}:{i.get('from')}")
+
+
+def send_files(raw):
+    """Файлы ответа: пути только внутри папки вложений хаба (клиент кладёт их через /api/upload); чужие пути, папки
+    и несуществующие — молча мимо: пост владельца не должен уметь отправить любой файл с диска."""
+    root = os.path.realpath(os.path.join(STATE, "attachments")) + os.sep
+    out = []
+    for f in (raw if isinstance(raw, list) else [])[:10]:
+        p = os.path.realpath(os.path.expanduser(str(f.get("path") if isinstance(f, dict) else f or "")))
+        if p.startswith(root) and os.path.isfile(p) and p not in out:
+            out.append(p)
+    return out
 
 
 def ignored_list(st):
@@ -527,14 +549,22 @@ def due(at, now=None):
     return (t if t.tzinfo else t.replace(tzinfo=timezone.utc)) <= (now or datetime.now(timezone.utc))
 
 
-def deliver(st, reader, ref, text=None, emoji=None):
+def deliver(st, reader, ref, text=None, emoji=None, files=None, reply_to=None, quote=None):
     if not ref:
         raise OSError("отсюда ответить нельзя: не знаю, куда")
     if ref.get("wa") or ref.get("mail") or ref.get("tg"):
-        return sources.react(ref, emoji) if emoji else sources.reply(ref, text)
+        if emoji:
+            return sources.react(ref, emoji, reply_to)
+        return sources.reply(ref, text, files=files, reply_to=reply_to, quote=quote)
+    if files:
+        raise OSError("в Teams файл вложением не уйдёт — пришли ссылкой на него")
+    if quote and reply_to:
+        text = f"> {' '.join(quote.split())[:300]}\n\n{text}"   # у чата Teams нет ответа на сообщение — цитата текстом
     if not reader.mcp:
         reader.connect(st)
-    return collect.react(reader.mcp, ref, emoji) if emoji else collect.reply(reader.mcp, ref, text)
+    if emoji:
+        return collect.react(reader.mcp, ref, emoji, reply_to) if reply_to else collect.react(reader.mcp, ref, emoji)
+    return collect.reply(reader.mcp, ref, text)
 
 
 def send_replies(st, reader, queue, put=post, now=None):
@@ -565,7 +595,7 @@ def send_replies(st, reader, queue, put=post, now=None):
         if q["rid"] in done or q["rid"] in later:
             continue
         if q.get("at") and not due(q["at"], now):
-            later[q["rid"]] = {"id": q["id"], "text": q["text"], "at": q["at"]}
+            later[q["rid"]] = {k: q[k] for k in ("id", "text", "at", "files", "reply_to", "quote") if k in q}
             put({"kind": "scheduled", "id": q["id"], "rid": q["rid"], "at": q["at"]})
             save(st)
             continue
@@ -625,7 +655,8 @@ def send_one(st, reader, q, put=post):
     save(st)
     emoji = q.get("react")
     try:
-        deliver(st, reader, (st.get("refs") or {}).get(q["id"]), (q.get("text") or "")[:POST_MAX], emoji)
+        deliver(st, reader, (st.get("refs") or {}).get(q["id"]), (q.get("text") or "")[:POST_MAX], emoji,
+                files=q.get("files"), reply_to=q.get("reply_to"), quote=q.get("quote"))
     except Exception as e:   # noqa: BLE001
         reader.close()
         put({"kind": "react_failed" if emoji else "send_failed", "id": q["id"], "rid": q["rid"], "error": short(e)})

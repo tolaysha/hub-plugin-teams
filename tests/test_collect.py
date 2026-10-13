@@ -268,6 +268,21 @@ class Replies(unittest.TestCase):
         with self.assertRaises(OSError):
             collect.reply(M(), {}, "x")
 
+    def test_send_files_only_from_the_hub_attachments_folder(self):
+        # 13.10: файлы ответа — только из папки вложений хаба: пост не должен отправить любой файл с диска
+        import tempfile
+        inside = os.path.join(main.STATE, "attachments", "zz-test-send")
+        os.makedirs(inside, exist_ok=True)
+        good = os.path.join(inside, "a.png")
+        open(good, "w").close()
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".txt") as outside:
+                self.assertEqual(main.send_files([good, outside.name, "/nope/x", {"path": good}]), [os.path.realpath(good)])
+        finally:
+            os.unlink(good)
+            os.rmdir(inside)
+        self.assertEqual(main.send_files("x"), [])
+
     def test_only_owner_send_posts_are_taken_and_each_is_sent_once(self):
         import json
         import tempfile

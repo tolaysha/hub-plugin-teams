@@ -584,35 +584,44 @@ def human(message):
     return re.sub(r"^(?:send failed|Blocked|Not sent):\s*", "", msg).strip() or "не отправлено"
 
 
-def reply(ref, text):
+def reply(ref, text, files=None, reply_to=None, quote=None):
     try:
-        return _reply(ref, text)
+        return _reply(ref, text, files or [], reply_to, quote)
     except OSError as e:
         raise OSError(human(e)) from None
 
 
-def _reply(ref, text):
+def _reply(ref, text, files=(), reply_to=None, quote=None):
     """WhatsApp — сообщением в тот же чат (команда send из sources.json: её ночные и прочие запреты действуют — отказ
-    вернётся ошибкой во вкладку); почта — ответом всем в ту же цепочку."""
+    вернётся ошибкой во вкладку); почта — ответом всем в ту же цепочку; файлы — вложениями (--file). Ответ на
+    конкретное сообщение: Telegram — настоящим ответом (--reply-to), WhatsApp — цитатой текстом."""
+    fl = [x for f in files for x in ("--file", f)]
     if ref.get("wa"):
-        return run([ref["send"], "wa", "--to", ref["to"], "--channel", ref["wa"], "--text", text], timeout=180)
+        if reply_to and quote:
+            text = f"> {' '.join(quote.split())[:300]}\n{text}"
+        return run([ref["send"], "wa", "--to", ref["to"], "--channel", ref["wa"], "--text", text, *fl], timeout=180)
     if ref.get("tg"):
-        return run([ref["send"], "tg", "--to", ref["tg"], "--text", text], timeout=120)
+        rt = ["--reply-to", reply_to] if reply_to and str(reply_to).isdigit() else []
+        return run([ref["send"], "tg", "--to", ref["tg"], "--text", text, *fl, *rt], timeout=180)
     if ref.get("mail"):
         subject = ref.get("subject") or ""
         if not re.match(r"(?i)re:", subject):
             subject = "Re: " + subject
         return run([ref["cmd"], "gmail", "send", "--thread-id", ref["thread"], "--reply-all", "--subject", subject,
-                    "--body", text, "-a", ref["mail"]], timeout=120)
+                    "--body", text, "-a", ref["mail"], *[x for f in files for x in ("--attach", f)]], timeout=180)
     raise OSError("не знаю, куда отвечать на это сообщение")
 
 
-def react(ref, emoji):
+def react(ref, emoji, msg=None):
     """Реакция в WhatsApp — командой из sources.json (`"react": "<путь>"`): <команда> react <чат> --id <сообщение>
-    --emoji <эмодзи> --channel <номер>."""
-    if ref.get("wa") and ref.get("react") and ref.get("msg"):
-        return run([ref["react"], "react", ref["to"], "--id", ref["msg"], "--emoji", emoji, "--channel", ref["wa"]],
+    --emoji <эмодзи> --channel <номер>; Telegram — tgnew react. msg — id конкретного сообщения переписки (иначе то,
+    на которое пришёл пост)."""
+    if ref.get("wa") and ref.get("react") and (msg or ref.get("msg")):
+        return run([ref["react"], "react", ref["to"], "--id", msg or ref["msg"], "--emoji", emoji, "--channel", ref["wa"]],
                    timeout=120)
+    if ref.get("tg") and (msg or ref.get("msg")) and str(msg or ref.get("msg")).isdigit():
+        return run([ref.get("cmd") or expand("~/.claude/bin/tgnew"), "react", ref["tg"], str(msg or ref["msg"]),
+                    "--emoji", emoji], timeout=60)
     raise OSError("на это сообщение реакцию поставить нельзя")
 
 
@@ -634,7 +643,8 @@ def history(ref, top=20):
                 at = ""
             text = (m.get("body") or "").strip() or ("[медиа]" if m.get("media") else "")
             if text:
-                out.append({"at": at, "from": m.get("author") or "", "me": bool(m.get("out")), "text": text})
+                out.append({"at": at, "from": m.get("author") or "", "me": bool(m.get("out")), "text": text,
+                            **({"id": str(m["id"])} if m.get("id") else {})})
         return out
     if ref.get("tg"):
         try:
@@ -650,7 +660,7 @@ def history(ref, top=20):
         out = []
         for m in msgs:
             e = {"at": iso_utc(datetime.fromtimestamp(m["t"], timezone.utc)), "from": m.get("from") or "",
-                 "me": bool(m.get("out")), "text": m.get("text") or ""}
+                 "me": bool(m.get("out")), "text": m.get("text") or "", **({"id": str(m["id"])} if m.get("id") else {})}
             if str(m.get("id")) in got:
                 e["media"] = [got[str(m["id"])]]
             elif m.get("media"):
