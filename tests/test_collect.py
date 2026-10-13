@@ -489,6 +489,32 @@ class Later(unittest.TestCase):
         self.assertEqual(sent, [("tg:77", "Привет", [])])
         self.assertEqual([p["kind"] for p in self.out], ["contacts", "sent"])
 
+    def test_read_and_amend_go_to_the_source_once_with_clear_failures(self):
+        # 13.10: «прочитано», правка и удаление своего — по кнопке; повтор rid и просьба из старого журнала не исполняются
+        import time
+        real = (main.sources.mark_read, main.sources.amend, collect.edit, main.save)
+        log = []
+        main.sources.mark_read = lambda ref: log.append(("read", ref))
+        main.sources.amend = lambda ref, msg, text=None: log.append(("amend", msg, text))
+        collect.edit = lambda mcp, ref, msg, text: log.append(("teams-edit", msg, text))
+        main.save = lambda st: None
+        try:
+            st = {"refs": {"k1": {"tg": "77"}, "k2": {"chat": "c1"}}}
+            now = time.time()
+            qs = [{"read": "k1", "rid": "r1", "ts": now}, {"read": "k1", "rid": "r1", "ts": now},
+                  {"amend": "edit", "id": "k1", "rid": "r2", "msg": "41", "text": "Новое", "ts": now},
+                  {"amend": "delete", "id": "k1", "rid": "r3", "msg": "41", "text": None, "ts": now},
+                  {"amend": "edit", "id": "k2", "rid": "r4", "msg": "m9", "text": "Правка", "ts": now},
+                  {"amend": "delete", "id": "k2", "rid": "r5", "msg": "m9", "text": None, "ts": now},
+                  {"read": "k1", "rid": "r6", "ts": now - 3600}]
+            main.send_replies(st, self.R(), qs, self.out.append)
+        finally:
+            main.sources.mark_read, main.sources.amend, collect.edit, main.save = real
+        self.assertEqual(log, [("read", {"tg": "77"}), ("amend", "41", "Новое"), ("amend", "41", None),
+                               ("teams-edit", "m9", "Правка")])
+        self.assertEqual([(p["kind"], p["rid"]) for p in self.out],
+                         [("read", "r1"), ("edited", "r2"), ("deleted", "r3"), ("edited", "r4"), ("amend_failed", "r5")])
+
     def test_settings_become_config_post(self):
         class C:
             settings = {"signature": "_Хаб_", "autodraft": True}

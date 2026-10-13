@@ -236,6 +236,15 @@ def reply(mcp, ref, text):
     raise OSError("не знаю, куда отвечать на это сообщение")
 
 
+def edit(mcp, ref, msg, text):
+    """Правка своего сообщения в чате Teams (Graph PATCH). Удаление через этот сервер недоступно (нет softDelete)."""
+    if ref.get("chat") and msg:
+        return mcp.call("update-chat-message", {"chatId": ref["chat"], "chatMessageId": msg,
+                                                "body": {"body": {"contentType": "html", "content": html_body(text)}}},
+                        empty_ok=True)
+    raise OSError("это сообщение изменить нельзя")
+
+
 def can_react(ref):
     """На что можно поставить реакцию: сообщение чата и первое сообщение треда канала (ответу в треде Graph реакцию
     этим вызовом не ставит); WhatsApp — когда в sources.json задана команда реакции."""

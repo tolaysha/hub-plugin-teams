@@ -150,6 +150,28 @@ class Telegram(unittest.TestCase):
         self.assertEqual([i["id"] for i in sources.page(items, 20, search="ДОГОВОР")], ["3"])
         self.assertEqual(len(sources.page(items, 4)), 4)
 
+    def test_amend_own_message_only_in_telegram(self):
+        calls = []
+        sources.run = lambda cmd, timeout=0: calls.append(cmd) or ""
+        sources.amend({"tg": "77", "cmd": "tgnew"}, "41", "Исправлено")
+        sources.amend({"tg": "77", "cmd": "tgnew"}, "41")
+        self.assertEqual(calls, [["tgnew", "edit", "77", "41", "--text", "Исправлено"], ["tgnew", "delete", "77", "41"]])
+        for ref in ({"wa": "w", "to": "1@c.us"}, {"mail": "a@b.c", "thread": "t"}):
+            with self.assertRaises(OSError):
+                sources.amend(ref, "1", "x")
+
+    def test_mark_read_goes_to_the_source_and_teams_refuses(self):
+        calls = []
+        sources.run = lambda cmd, timeout=0: calls.append(cmd) or ""
+        sources.mark_read({"tg": "77", "cmd": "tgnew"})
+        sources.mark_read({"mail": "a@b.c", "thread": "t1", "cmd": "gogx"})
+        sources.mark_read({"wa": "whatsapp", "to": "5491@c.us", "cmd": "wa"})
+        self.assertEqual(calls, [["tgnew", "read", "77"],
+                                 ["gogx", "gmail", "thread", "modify", "t1", "--remove", "UNREAD", "-a", "a@b.c"],
+                                 ["wa", "thread", "5491", "--limit", "1", "--channel", "whatsapp"]])
+        with self.assertRaises(OSError):
+            sources.mark_read({"chat": "c1"})
+
     def test_send_refusals_are_human_text(self):
         # 12.10: «Not sent: send failed: TELEGRAM_API_ID / TELEGRAM_API_HASH not set» в интерфейсе — именами переменных
         self.assertNotIn("TELEGRAM_API", sources.human("send failed: TELEGRAM_API_ID / TELEGRAM_API_HASH not set"))

@@ -23,6 +23,12 @@ Teams — сообщение само уходит в «Разобранные»
 
 - **Отправить позже** — `{"kind": "send", id, rid, text, "at": "<ISO UTC>"}`: ответ ждёт своего часа в состоянии плагина
   (пост `scheduled`), `{"kind": "cancel", rid}` его снимает (`canceled`).
+- **Прочитано** (13.10) — у msg-поста `unread` (число у чатов, `true` у почты; у Teams нет). `{"kind": "read", id, rid}` →
+  `read` / `read_failed {error}`: Telegram — чат прочитан, почта — снята метка UNREAD, WhatsApp — чат открывается
+  (отправитель увидит синие галочки), Teams — нельзя (Graph не даёт).
+- **Правка и удаление своего** (13.10) — `{"kind": "edit", id, rid, msg, text}` / `{"kind": "delete", id, rid, msg}`, `msg` — id
+  своего сообщения из `thread`. Ответ: `edited` / `deleted` / `amend_failed {op, error}`. Telegram — оба (только свои,
+  для всех), Teams — правка (удаление этим сервером недоступно), WhatsApp и почта — нельзя.
 - **Кому написать** (13.10) — `{"kind": "contacts", rid, q, "src"?}` → пост `{"kind": "contacts", rid, q, items: [{src, to, name, hint}], errors}`
   (Telegram: диалоги и контакты; WhatsApp: чаты страницы; почта: адреса из переписки; Teams: пользователи каталога). Первое
   сообщение: `{"kind": "send_new", rid, to: "<to из поиска>", text, files?, subject?}` → `sent` / `send_failed` с `rid` и `to`.

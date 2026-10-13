@@ -202,7 +202,7 @@ def whatsapp(cfg, now):
             media = wa_media(cfg, ch, cid, f"{box}:{mark}") if kinds & {"image", "sticker"} else []
             if media and not any(m.get("body") or m.get("text") for m in wait):
                 text = ""   # у картинки без подписи заглушек нет — клиент рисует вложение
-            items.append({"key": f"{box}:{mark}", "box": box, "src": "whatsapp", "tier": t,
+            items.append({"key": f"{box}:{mark}", "box": box, "src": "whatsapp", "tier": t, "unread": n,
                           **({"media": media} if media else {}),
                           "where": labels.get(ch, "WhatsApp") + (" · группа" if group else ""),
                           "from": r.get("name") or digits, "text": text[:1200], "at": iso_utc(last),
@@ -384,7 +384,7 @@ def telegram(cfg, now):
         if media and not any((m.get("text") or "").strip() for m in wait):
             text = ""   # 12.10: у медиа без подписи заглушки («[фото]», «1 сообщение без текста») не кладём — клиент рисует само вложение
         links = [m["link"] for m in wait if m.get("link")][-3:]
-        items.append({"key": f"{box}:{mark}", "box": box, "src": "telegram", "tier": t,
+        items.append({"key": f"{box}:{mark}", "box": box, "src": "telegram", "tier": t, "unread": n,
                       "where": "Telegram" + (" · группа" if group else ""), "from": r.get("name") or cid,
                       "text": text[:1200], "at": iso_utc(at), "mention": False,
                       **({"media": media} if media else {}), **({"links": links} if links else {}),
@@ -553,7 +553,7 @@ def email(cfg, now):
             links = [{"url": u.rstrip(".,;")} for u in dict.fromkeys(URL.findall(body))
                      if not re.search(r"(?i)\.(png|gif|jpe?g)(\?|$)|gstatic\.com|aka\.ms/", u)][:3]
             items.append({"key": f"{box}:{th.get('date')}:{th.get('messageCount')}", "box": box, "src": "email",
-                          "tier": t, "where": "Почта" + (f" · {acct}" if len(cfg.get("accounts") or []) > 1 else ""),
+                          "tier": t, "unread": "UNREAD" in labels, "where": "Почта" + (f" · {acct}" if len(cfg.get("accounts") or []) > 1 else ""),
                           "from": name or "—", "text": (subject or "(без темы)") + (f"\n\n{body}" if body else ""),
                           "at": at, **({"links": links} if links else {}), **({"media": media} if media else {}),
                           "link": f"https://mail.google.com/mail/u/0/?authuser={acct}#inbox/{th['id']}", "mention": False,
@@ -635,6 +635,36 @@ def page(items, top, before=None, search=None):
         q = search.casefold()
         items = [i for i in items if q in (i.get("text") or "").casefold() or q in (i.get("from") or "").casefold()]
     return items[-top:]
+
+
+def amend(ref, msg, text=None):
+    """Правка (text) или удаление (text=None) своего отправленного. Telegram — Telethon (только свои сообщения);
+    WhatsApp и почта — нельзя: у WhatsApp нет такого канала, письмо не вернуть."""
+    if ref.get("tg") and str(msg).isdigit():
+        cmd = ref.get("cmd") or expand("~/.claude/bin/tgnew")
+        if text is None:
+            return run([cmd, "delete", ref["tg"], str(msg)], timeout=60)
+        return run([cmd, "edit", ref["tg"], str(msg), "--text", text], timeout=60)
+    if ref.get("wa"):
+        raise OSError("в WhatsApp отправленное отсюда не поправить")
+    if ref.get("mail"):
+        raise OSError("отправленное письмо не вернуть")
+    raise OSError("это сообщение изменить нельзя")
+
+
+def mark_read(ref):
+    """Пометить прочитанным в источнике — только по явной кнопке владельца. Telegram — прочитано до конца чата; почта —
+    снимается метка UNREAD с цепочки; WhatsApp — чат открывается (отправитель увидит синие галочки: слово Ивана 13.10)."""
+    if ref.get("tg"):
+        return run([ref.get("cmd") or expand("~/.claude/bin/tgnew"), "read", ref["tg"]], timeout=60)
+    if ref.get("mail"):
+        return run([ref["cmd"], "gmail", "thread", "modify", ref["thread"], "--remove", "UNREAD", "-a", ref["mail"]],
+                   timeout=60)
+    if ref.get("wa"):
+        who = ref["to"] if ref["to"].endswith("@g.us") else re.sub(r"\D", "", ref["to"].split("@")[0])
+        return run([ref.get("cmd") or expand("~/.claude/bin/wa"), "thread", who, "--limit", "1", "--channel", ref["wa"]],
+                   timeout=120)
+    raise OSError("в Teams прочитанным пометить нельзя: Graph этого не даёт")
 
 
 def history(ref, top=20, before=None, search=None):

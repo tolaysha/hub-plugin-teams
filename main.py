@@ -48,7 +48,7 @@ FAIL_AFTER = 3
 SEEN_MAX, OPEN_MAX = 3000, 500
 POST_MAX = 2000
 PROMPT_MAX = 2000                  # знаков: указания владельца по разбору входящих
-OWNER_KINDS = re.compile(rb'watch|\\"(?:send|react|cancel|settings|history|ignore|unignore|contacts|send_new)\\"')   # посты владельца, которые читает процесс
+OWNER_KINDS = re.compile(rb'watch|\\"(?:send|react|cancel|settings|history|ignore|unignore|contacts|send_new|read|edit|delete)\\"')   # посты владельца, которые читает процесс
 DIR_EVERY = 6 * 3600               # список каналов команд перечитываем и заново постим раз в 6 часов: канал плагина
                                    # хранит 500 последних постов, старые списки вытесняются сообщениями
 
@@ -168,6 +168,13 @@ class Choice:
                                **{k: str(body[k])[:200] for k in ("before", "before_at", "search") if body.get(k)},
                                **({"limit": min(max(int(body["limit"]), 1), 50)}
                                   if isinstance(body.get("limit"), int) and not isinstance(body.get("limit"), bool) else {})})
+        elif isinstance(body, dict) and body.get("kind") in ("edit", "delete") and all(
+                isinstance(body.get(k), str) and body[k] for k in ("id", "rid", "msg")) and (
+                body["kind"] == "delete" or isinstance(body.get("text"), str) and body["text"].strip()):
+            self.sends.append({"amend": body["kind"], "id": body["id"], "rid": body["rid"], "msg": body["msg"][:200],
+                               "text": body.get("text") if body["kind"] == "edit" else None, "ts": ev.get("ts") or 0})
+        elif isinstance(body, dict) and body.get("kind") == "read" and all(isinstance(body.get(k), str) and body[k] for k in ("id", "rid")):
+            self.sends.append({"read": body["id"], "rid": body["rid"], "ts": ev.get("ts") or 0})
         elif isinstance(body, dict) and body.get("kind") == "contacts" and isinstance(body.get("rid"), str):
             self.sends.append({"contacts": str(body.get("q") or "")[:80], "rid": body["rid"], "ts": ev.get("ts") or 0,
                                **({"src": body["src"]} if isinstance(body.get("src"), str) else {})})
@@ -411,7 +418,8 @@ def tick(st, items, owner_last, now, put=post):
              **({"react": True} if collect.can_react(i.get("ref")) else {}),
              "sign": colleague(i, rules),   # подпись хаба под черновиком — только когда это коллега
              **({"also": i["also"]} if i.get("also") else {}),
-             **{k: i[k] for k in ("src", "where", "from", "text", "at", "link", "mention", "tier", "media", "links") if k in i}})
+             **{k: i[k] for k in ("src", "where", "from", "text", "at", "link", "mention", "tier", "media", "links", "unread")
+                if k in i}})
         st.setdefault("who", {})[i["key"]] = {"contact": contact(i), "from": i.get("from"), "src": i.get("src"),
                                               "where": i.get("where")}
         if i.get("ref"):   # куда ответить владелец сможет из вкладки; в пост это не идёт
@@ -599,6 +607,12 @@ def send_replies(st, reader, queue, put=post, now=None):
         if "history" in q:
             history(st, reader, q, put)
             continue
+        if "amend" in q:
+            amend_one(st, reader, q, put)
+            continue
+        if "read" in q:
+            read_one(st, reader, q, put)
+            continue
         if "contacts" in q:
             find_contacts(st, reader, q, put, now)
             continue
@@ -632,6 +646,49 @@ def source_cfg():
             return json.load(f)
     except (OSError, ValueError):
         return {}
+
+
+def amend_one(st, reader, q, put=post):
+    """Правка или удаление своего отправленного по кнопке владельца: {"kind": "edited"|"deleted", id, rid, msg} или
+    {"kind": "amend_failed", ..., error}. Просьба из перечитанного журнала и повтор rid не исполняются."""
+    done = st.setdefault("sent_rids", [])
+    if q["rid"] in done or time.time() - (q.get("ts") or time.time()) > HISTORY_FRESH:
+        return
+    done.append(q["rid"])
+    del done[:-500]
+    save(st)
+    ref, text = (st.get("refs") or {}).get(q["id"]) or {}, (q.get("text") or "")[:POST_MAX] if q["amend"] == "edit" else None
+    try:
+        if ref.get("tg") or ref.get("wa") or ref.get("mail"):
+            sources.amend(ref, q["msg"], text)
+        elif q["amend"] == "edit":
+            if not reader.mcp:
+                reader.connect(st)
+            collect.edit(reader.mcp, ref, q["msg"], text)
+        else:
+            raise OSError("в Teams удалить сообщение отсюда нельзя")
+    except Exception as e:   # noqa: BLE001
+        reader.close()
+        put({"kind": "amend_failed", "op": q["amend"], "id": q["id"], "rid": q["rid"], "msg": q["msg"], "error": short(e)})
+        return
+    put({"kind": "edited" if q["amend"] == "edit" else "deleted", "id": q["id"], "rid": q["rid"], "msg": q["msg"]})
+
+
+def read_one(st, reader, q, put=post):
+    """Пометить прочитанным в источнике по кнопке владельца: ответ {"kind": "read", id, rid} / {"kind": "read_failed",
+    id, rid, error}. Просьба из перечитанного журнала и повтор того же rid не исполняются."""
+    done = st.setdefault("sent_rids", [])
+    if q["rid"] in done or time.time() - (q.get("ts") or time.time()) > HISTORY_FRESH:
+        return
+    done.append(q["rid"])
+    del done[:-500]
+    save(st)
+    try:
+        sources.mark_read((st.get("refs") or {}).get(q["read"]) or {})
+    except Exception as e:   # noqa: BLE001
+        put({"kind": "read_failed", "id": q["read"], "rid": q["rid"], "error": short(e)})
+        return
+    put({"kind": "read", "id": q["read"], "rid": q["rid"]})
 
 
 def find_contacts(st, reader, q, put=post, now=None):
