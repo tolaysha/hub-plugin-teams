@@ -465,6 +465,30 @@ class Later(unittest.TestCase):
         self.assertEqual((paged[0]["before"], paged[0]["more"]), ("m5", False))
         self.assertEqual([p["search"] for p in self.out if p.get("search")], ["договор"])
 
+    def test_contacts_search_and_first_message_to_a_new_person(self):
+        # 13.10: поиск собеседника и первое сообщение ему — по ключу из поиска; rid помним до отправки
+        import contacts as C
+        import time
+        real_s, real_send, real_cfg, real_save = C.search, C.send, main.source_cfg, main.save
+        sent = []
+        C.search = lambda q, cfg, mcp=None, only=None: ([{"src": "telegram", "to": "tg:77", "name": "Лена", "hint": ""}], [])
+        C.send = lambda to, text, cfg, mcp=None, me=None, files=(), subject="": sent.append((to, text, list(files)))
+        main.source_cfg = lambda: {"telegram": {}}
+        main.save = lambda st: None
+        try:
+            st = {"me": {"id": "me"}}
+            now = time.time()
+            main.send_replies(st, self.R(), [{"contacts": "Лена", "rid": "c1", "ts": now, "src": "telegram"}], self.out.append)
+            q = {"send_new": "tg:77", "rid": "n1", "text": "Привет", "files": [], "subject": ""}
+            main.send_replies(st, self.R(), [q], self.out.append)
+            main.send_replies(st, self.R(), [q], self.out.append)   # тот же rid — второй раз не уйдёт
+        finally:
+            C.search, C.send, main.source_cfg, main.save = real_s, real_send, real_cfg, real_save
+        self.assertEqual(self.out[0]["kind"], "contacts")
+        self.assertEqual(self.out[0]["items"][0]["to"], "tg:77")
+        self.assertEqual(sent, [("tg:77", "Привет", [])])
+        self.assertEqual([p["kind"] for p in self.out], ["contacts", "sent"])
+
     def test_settings_become_config_post(self):
         class C:
             settings = {"signature": "_Хаб_", "autodraft": True}

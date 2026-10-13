@@ -23,6 +23,10 @@ Teams — сообщение само уходит в «Разобранные»
 
 - **Отправить позже** — `{"kind": "send", id, rid, text, "at": "<ISO UTC>"}`: ответ ждёт своего часа в состоянии плагина
   (пост `scheduled`), `{"kind": "cancel", rid}` его снимает (`canceled`).
+- **Кому написать** (13.10) — `{"kind": "contacts", rid, q, "src"?}` → пост `{"kind": "contacts", rid, q, items: [{src, to, name, hint}], errors}`
+  (Telegram: диалоги и контакты; WhatsApp: чаты страницы; почта: адреса из переписки; Teams: пользователи каталога). Первое
+  сообщение: `{"kind": "send_new", rid, to: "<to из поиска>", text, files?, subject?}` → `sent` / `send_failed` с `rid` и `to`.
+  Письму нужна `subject`; в Teams файл вложением нельзя. Ничего не отправляется, пока владелец не нажал «Отправить».
 - **Старее и поиск** (13.10) — `{"kind": "history", id, "before": "<items[].id самого старого показанного>", "before_at": "<его at>", "search": "<текст>", "limit": 1..50}`:
   ответ — обычные посты `{"kind": "thread", id, part, of, items, before?, search?, more}`; `more` — страница полная, старше,
   возможно, есть ещё. Telegram — с сервера Telegram (offset по id, поиск Telegram), Teams — Graph (`before_at`, поиск чата),

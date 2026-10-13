@@ -31,6 +31,7 @@ from core.daemon import default_state_dir  # noqa: E402
 from core.tools import from_owner  # noqa: E402
 
 import collect  # noqa: E402
+import contacts  # noqa: E402
 
 import mcp  # noqa: E402
 import sources  # noqa: E402
@@ -47,7 +48,7 @@ FAIL_AFTER = 3
 SEEN_MAX, OPEN_MAX = 3000, 500
 POST_MAX = 2000
 PROMPT_MAX = 2000                  # знаков: указания владельца по разбору входящих
-OWNER_KINDS = re.compile(rb'watch|\\"(?:send|react|cancel|settings|history|ignore|unignore)\\"')   # посты владельца, которые читает процесс
+OWNER_KINDS = re.compile(rb'watch|\\"(?:send|react|cancel|settings|history|ignore|unignore|contacts|send_new)\\"')   # посты владельца, которые читает процесс
 DIR_EVERY = 6 * 3600               # список каналов команд перечитываем и заново постим раз в 6 часов: канал плагина
                                    # хранит 500 последних постов, старые списки вытесняются сообщениями
 
@@ -167,6 +168,16 @@ class Choice:
                                **{k: str(body[k])[:200] for k in ("before", "before_at", "search") if body.get(k)},
                                **({"limit": min(max(int(body["limit"]), 1), 50)}
                                   if isinstance(body.get("limit"), int) and not isinstance(body.get("limit"), bool) else {})})
+        elif isinstance(body, dict) and body.get("kind") == "contacts" and isinstance(body.get("rid"), str):
+            self.sends.append({"contacts": str(body.get("q") or "")[:80], "rid": body["rid"], "ts": ev.get("ts") or 0,
+                               **({"src": body["src"]} if isinstance(body.get("src"), str) else {})})
+        elif isinstance(body, dict) and body.get("kind") == "send_new":
+            files = send_files(body.get("files"))
+            if all(isinstance(body.get(k), str) and body[k] for k in ("rid", "to")) and (
+                    isinstance(body.get("text"), str) and body["text"] or files):
+                self.sends.append({"send_new": body["to"][:300], "rid": body["rid"],
+                                   "text": body["text"] if isinstance(body.get("text"), str) else "",
+                                   "files": files, "subject": str(body.get("subject") or "")[:200]})
         elif isinstance(body, dict) and body.get("kind") == "settings":
             self.settings = {"signature": str(body.get("signature") or "")[:300],
                              "autodraft": body.get("autodraft") is not False,
@@ -588,6 +599,12 @@ def send_replies(st, reader, queue, put=post, now=None):
         if "history" in q:
             history(st, reader, q, put)
             continue
+        if "contacts" in q:
+            find_contacts(st, reader, q, put, now)
+            continue
+        if "send_new" in q:
+            send_new(st, reader, q, put)
+            continue
         if "cancel" in q:
             held = later.pop(q["cancel"], None)
             if held:   # снятое не уйдёт и после перезапуска (журнал читается заново)
@@ -607,6 +624,54 @@ def send_replies(st, reader, queue, put=post, now=None):
         if due(q["at"], now):
             del later[rid]
             send_one(st, reader, {**q, "rid": rid}, put)
+
+
+def source_cfg():
+    try:
+        with open(os.path.join(OWN, "sources.json"), encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def find_contacts(st, reader, q, put=post, now=None):
+    """Кому написать: поиск собеседника по источникам (contacts.py). Просьба из перечитанного журнала не исполняется."""
+    if (now or time.time()) - (q.get("ts") or now or time.time()) > HISTORY_FRESH:
+        return
+    cfg, mcp_ = source_cfg(), None
+    if q.get("src") in (None, "teams"):
+        try:
+            if not reader.mcp:
+                reader.connect(st)
+            mcp_ = reader.mcp
+        except Exception:   # noqa: BLE001 — без Teams ищем в остальных
+            reader.close()
+    items, errors = contacts.search(q["contacts"], cfg, mcp_, q.get("src"))
+    put({"kind": "contacts", "rid": q["rid"], "q": q["contacts"], "items": items[:60], "errors": errors})
+
+
+def send_new(st, reader, q, put=post):
+    """Первое сообщение собеседнику, которого нет в Inbox: адрес — ключ из поиска. rid помним ДО отправки."""
+    done = st.setdefault("sent_rids", [])
+    if q["rid"] in done:
+        return
+    done.append(q["rid"])
+    del done[:-500]
+    save(st)
+    try:
+        mcp_ = None
+        if q["send_new"].startswith("teams:"):
+            if not reader.mcp:
+                reader.connect(st)
+            mcp_ = reader.mcp
+        contacts.send(q["send_new"], (q.get("text") or "")[:POST_MAX], source_cfg(), mcp_, (st.get("me") or {}).get("id"),
+                      q.get("files") or [], q.get("subject") or "")
+    except Exception as e:   # noqa: BLE001
+        reader.close()
+        put({"kind": "send_failed", "rid": q["rid"], "to": q["send_new"], "error": short(e)})
+        print(f"teams: новое сообщение {q['rid']} не ушло: {e}", file=sys.stderr, flush=True)
+        return
+    put({"kind": "sent", "rid": q["rid"], "to": q["send_new"], "at": iso(datetime.now(timezone.utc))})
 
 
 HISTORY_FRESH = 300    # просьба старше — из перечитанного журнала: не исполняем
