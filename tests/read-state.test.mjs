@@ -1,0 +1,30 @@
+import {readFileSync} from 'node:fs';
+import assert from 'node:assert/strict';
+const {localReadState}=await import('data:text/javascript,'+encodeURIComponent(readFileSync('web/read-state.js','utf8')));
+const values=new Map(),storage={getItem:k=>values.get(k),setItem:(k,v)=>values.set(k,v)};
+let hub='a';const identity=m=>JSON.stringify([m.src,m.contact,m.id]);
+const state=()=>localReadState(()=>hub,identity,new Set(['legacy']),storage);
+const a={src:'telegram',contact:'account/chat-a',id:'1',unread:false};
+const b={...a,contact:'account/chat-b'},c={...a,src:'email'};
+const first=state(),second=state();assert.equal(first.isUnread(a),false);
+assert.equal(first.set([a],true),true);assert.equal(second.isUnread(a),true);
+assert.equal(second.isUnread(b),false);assert.equal(second.isUnread(c),false);
+second.set([b],true);assert.equal(first.isUnread(a),true);assert.equal(first.isUnread(b),true);
+hub='b';assert.equal(first.isUnread(a),false);hub='a';assert.equal(state().isUnread(a),true);
+first.set([a],false);assert.equal(second.isUnread(a),false);
+assert.equal(first.isUnread({id:'legacy'}),false);assert.equal(first.isUnread({id:'new'}),true);
+let writes=0;const corrupt=localReadState(()=>hub,identity,new Set(),{getItem:()=>'{bad',setItem(){writes++}});
+assert.equal(corrupt.set([a],true),false);assert.equal(writes,0);
+const denied=localReadState(()=>hub,identity,new Set(),{getItem:()=> '[]',setItem(){throw Error('quota')}});
+assert.equal(denied.set([a],true),false);assert.equal(denied.isUnread(a),false);
+console.log('Local unread reminders preserve exact Hub/source/message scope, old seen state and refusal truth');
+
+const retained=JSON.stringify([[identity(a),true]]);
+const failAfterRead=localReadState(()=>hub,identity,new Set(),{getItem:()=>retained,setItem(){throw Error('quota')}});
+assert.equal(failAfterRead.isUnread(a),true);assert.equal(failAfterRead.set([a],false),false);assert.equal(failAfterRead.isUnread(a),true,'refused write cannot mutate cached state');
+
+const large=[{...a,id:'x'.repeat(256*1024)}];
+const before=values.get('hub.inbox.read.v1:a');
+assert.equal(first.set(large,true),false,'read preferences must not consume unbounded draft storage');
+assert.equal(values.get('hub.inbox.read.v1:a'),before,'capacity refusal preserves existing reminders');
+assert.equal(first.set([],true),false,'empty/stale target cannot report a saved reminder');

@@ -1,0 +1,176 @@
+{
+ "about": "Shared examples for hours.py (plugin teams) and InboxHours.swift; times are hub-local. Model: lean/SendModel/Hours.lean, Flow.lean (afterGate, deferTo).",
+ "rules": {
+  "weekdays": {
+   "from": "08:00",
+   "to": "20:00",
+   "weekends": false
+  },
+  "any": {
+   "from": "08:00",
+   "to": "20:00",
+   "weekends": true
+  },
+  "late": {
+   "from": "10:30",
+   "to": "24:00",
+   "weekends": false
+  }
+ },
+ "cases": [
+  {
+   "rule": "weekdays",
+   "fn": "next_start",
+   "now": "2026-10-13T05:31",
+   "want": "2026-10-13T08:00",
+   "note": "Tue before hours: today"
+  },
+  {
+   "rule": "weekdays",
+   "fn": "next_start",
+   "now": "2026-10-13T08:00",
+   "want": "2026-10-14T08:00",
+   "note": "exactly at start: strictly later"
+  },
+  {
+   "rule": "weekdays",
+   "fn": "next_start",
+   "now": "2026-10-13T15:00",
+   "want": "2026-10-14T08:00",
+   "note": "inside hours: tomorrow"
+  },
+  {
+   "rule": "weekdays",
+   "fn": "next_start",
+   "now": "2026-10-16T21:00",
+   "want": "2026-10-19T08:00",
+   "note": "Fri evening: Monday"
+  },
+  {
+   "rule": "any",
+   "fn": "next_start",
+   "now": "2026-10-16T21:00",
+   "want": "2026-10-17T08:00",
+   "note": "Fri evening, weekends allowed: Saturday"
+  },
+  {
+   "rule": "weekdays",
+   "fn": "next_start",
+   "now": "2026-10-17T06:00",
+   "want": "2026-10-19T08:00",
+   "note": "Sat morning: Monday"
+  },
+  {
+   "rule": "weekdays",
+   "fn": "next_start",
+   "now": "2026-10-18T12:00",
+   "want": "2026-10-19T08:00",
+   "note": "Sunday: Monday"
+  },
+  {
+   "rule": "any",
+   "fn": "next_start",
+   "now": "2026-10-18T06:00",
+   "want": "2026-10-18T08:00",
+   "note": "Sunday morning, weekends allowed: today"
+  },
+  {
+   "rule": "late",
+   "fn": "next_start",
+   "now": "2026-10-13T23:59",
+   "want": "2026-10-14T10:30",
+   "note": "window to midnight"
+  },
+  {
+   "rule": "weekdays",
+   "fn": "next_allowed",
+   "now": "2026-10-13T15:00",
+   "want": "2026-10-13T15:00",
+   "note": "inside hours: now"
+  },
+  {
+   "rule": "weekdays",
+   "fn": "next_allowed",
+   "now": "2026-10-13T19:59",
+   "want": "2026-10-13T19:59",
+   "note": "last minute of the window"
+  },
+  {
+   "rule": "weekdays",
+   "fn": "next_allowed",
+   "now": "2026-10-13T20:00",
+   "want": "2026-10-14T08:00",
+   "note": "end is exclusive"
+  },
+  {
+   "rule": "weekdays",
+   "fn": "next_allowed",
+   "now": "2026-10-17T12:00",
+   "want": "2026-10-19T08:00",
+   "note": "Saturday noon: Monday"
+  },
+  {
+   "rule": "any",
+   "fn": "next_allowed",
+   "now": "2026-10-17T12:00",
+   "want": "2026-10-17T12:00",
+   "note": "Saturday noon, weekends allowed: now"
+  },
+  {
+   "rule": "weekdays",
+   "fn": "defer_to",
+   "now": "2026-10-13T05:31",
+   "want": "2026-10-13T08:00",
+   "note": "the 13.10 case: Send Now at night",
+   "why": "night"
+  },
+  {
+   "rule": "weekdays",
+   "fn": "defer_to",
+   "now": "2026-10-12T23:30",
+   "want": "2026-10-13T08:00",
+   "note": "late evening: next morning",
+   "why": "night"
+  },
+  {
+   "rule": "weekdays",
+   "fn": "defer_to",
+   "now": "2026-10-17T23:30",
+   "want": "2026-10-19T08:00",
+   "note": "Sat night, weekdays only: Monday",
+   "why": "night"
+  },
+  {
+   "rule": "any",
+   "fn": "defer_to",
+   "now": "2026-10-17T23:30",
+   "want": "2026-10-18T08:00",
+   "note": "Sat night, weekends allowed: Sunday",
+   "why": "night"
+  },
+  {
+   "rule": "any",
+   "fn": "defer_to",
+   "now": "2026-10-18T08:00",
+   "want": "2026-10-19T08:00",
+   "note": "gate holds Sunday: Monday",
+   "why": "weekend"
+  },
+  {
+   "rule": "weekdays",
+   "fn": "defer_to",
+   "now": "2026-10-17T10:00",
+   "want": "2026-10-19T08:00",
+   "note": "gate holds Saturday: Monday",
+   "why": "weekend"
+  },
+  {
+   "rule": "late",
+   "fn": "defer_to",
+   "now": "2026-10-13T05:31",
+   "want": "2026-10-13T10:30",
+   "note": "gate opens 08:00, hours start later",
+   "why": "night"
+  }
+ ]
+}

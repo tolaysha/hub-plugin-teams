@@ -1,0 +1,76 @@
+{
+  "provenance": "Source-derived synthetic wire examples, not captured native execution or UI acceptance",
+  "native_bindings": [
+    {
+      "repository": "hub-ios",
+      "revision": "6bb89c9a124d4514df5436f27009e8cb32bc4efd",
+      "source_sha256": {
+        "Sources/Inbox+Control.swift": "daaa9faaa04878b71375fdaea76636853ba901d11a3d1fc94eab0435282538cc",
+        "Sources/Inbox+Management.swift": "31a12e858ef9daab8bc0e94d7f4ce7f9291aa11d3f2604bb06ba35529c44786a",
+        "Sources/Inbox+Drafts.swift": "917e1db4895afc1ec0c07fafc5a73823e8bea037ab80b9b6e0e99cc6baf95418",
+        "Sources/Inbox.swift": "5e47dea3cbbe59b15239b55e8043f11afce31fe4070d1eb53cb02939c5510be8"
+      },
+      "scope": "historical; no latest outcome acceptance"
+    },
+    {
+      "repository": "hub-ios",
+      "revision": "05afabbc2c9cb6be8c9b2bf87105b5226c9974b7",
+      "source_sha256": {
+        "Sources/Inbox+Control.swift": "f899098a3267f7598136d4c649e8b4a8343c85429d9abc982ca4d34cedae2764",
+        "Sources/Inbox+Management.swift": "be597fc885145633412f7901c487f2080dc7c49522815d4aefd49567c9dc0157",
+        "Sources/Inbox+Drafts.swift": "fd78804c2271c638f62291fef9a7d26d78eddbcdfd4ef6f6768a63559570422c",
+        "Sources/Inbox.swift": "b6e2fc2bcfd00f67e84107732d455179234711e052c1c6ecedbb0c7b2e1c90f4"
+      },
+      "scope": "current readback; confirmed-duplicate outcome adoption pending"
+    }
+  ],
+  "token_fields": [
+    "v",
+    "version",
+    "edit_version",
+    "held",
+    "holder"
+  ],
+  "requests": {
+    "manage": {
+      "kind": "manage",
+      "rid": "manage-1",
+      "text": "Prioritize current replies.\nKeep this wording."
+    },
+    "hold": {
+      "kind": "draft_control",
+      "id": "source-a",
+      "post": "p123",
+      "rid": "hold-1",
+      "action": "hold",
+      "editor": "client-a"
+    },
+    "ask": {
+      "kind": "ask",
+      "what": "draft",
+      "id": "source-a",
+      "post": "p123",
+      "rid": "private-1",
+      "instruction": "Use verified dates only",
+      "draft": "",
+      "editor": "client-a"
+    },
+    "send": {
+      "kind": "send",
+      "id": "source-a",
+      "rid": "send-1",
+      "text": "Verified reply",
+      "editor": "client-a"
+    },
+    "cancel": {
+      "kind": "cancel",
+      "rid": "send-1",
+      "editor": "client-a"
+    }
+  },
+  "limits": [
+    "native6bb89c9 does not adopt current sent token or uncertain/duplicate outcomes",
+    "native05afabb updates current sent token but confirmed send_duplicate still maps failed/uncertain",
+    "neither pinned source parses submitted_inbox/manual_followup; no complete consumer acceptance inferred"
+  ]
+}

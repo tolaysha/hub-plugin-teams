@@ -55,11 +55,13 @@ class Mcp:
                     raise OSError(f"ms365: {str((m['error'] or {}).get('message') or m['error'])[:200]}")
                 return m["result"]
 
-    def call(self, tool, args):
+    def call(self, tool, args, empty_ok=False):
         r = self.rpc("tools/call", {"name": tool, "arguments": args})
         text = "".join(c.get("text", "") for c in r.get("content", []))
         if r.get("isError"):
             raise OSError(f"ms365 {tool}: {text[:200]}")
+        if empty_ok and not text.strip():   # отправка иногда отвечает пустым телом — успех, раз не isError
+            return {}
         return json.loads(text)
 
     def close(self):
