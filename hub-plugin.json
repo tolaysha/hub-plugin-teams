@@ -1,7 +1,7 @@
 {
   "name": "teams",
-  "description": "Вкладка «Teams сообщения»: новые сообщения Microsoft Teams в одном списке — личка, упоминания вас, выбранные каналы. Кнопки «В работу», «Черновик ответа», «Скрыть».",
-  "why": "Не нужно пересылать хабу сообщения из Teams руками: всё входящее видно на странице хаба и одним нажатием уходит в работу",
+  "description": "A \"Teams messages\" tab: new Microsoft Teams messages in one list (direct messages, mentions of you, chosen channels), with \"Take on\", \"Draft a reply\" and \"Hide\" buttons",
+  "why": "No need to forward Teams messages to the hub by hand: everything incoming is on the hub page and goes into work with one press",
   "version": "1.3.0",
   "hub": "^1.11",
   "icon": "web/icon.svg",

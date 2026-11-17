@@ -1,10 +1,10 @@
-/* Вкладка «Teams сообщения»: шапка с фильтрами и лента карточек на всю рабочую область. Только токены хаба
-   (css/tokens.css), кнопки и переключатели — общие .btn и .seg страницы. Префикс tm- (не theme-: занят темой). */
+/* The "Teams messages" tab: a header with filters and a feed of cards over the whole work area. Only the hub tokens
+   (css/tokens.css); buttons and toggles are the page's shared .btn and .seg. The tm- prefix (not theme-: taken by themes). */
 .tm { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .tm-top { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4) var(--space-5) var(--space-3);
   border-bottom: 1px solid var(--border); }
 .tm-title-row { display: flex; align-items: baseline; gap: var(--space-3); flex-wrap: wrap; }
-.tm-logo { width: 22px; height: 22px; flex: none; align-self: center; }   /* лого Teams — только здесь, не в боковой панели (владелец 09.10) */
+.tm-logo { width: 22px; height: 22px; flex: none; align-self: center; }   /* the Teams logo only here, not in the sidebar */
 .tm-title { margin: 0; font-size: var(--text-lg); font-weight: 650; }
 .tm-sub { color: var(--muted-foreground); font-size: var(--text-sm); }
 .tm-keep { margin: 0; color: var(--muted-foreground); font-size: var(--text-xs, 12px); }

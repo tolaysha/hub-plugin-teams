@@ -1,6 +1,6 @@
-"""Клиент ms365 MCP (@softeria/ms-365-mcp-server) по stdio: один процесс сервера на всё время, вызовы инструментов
-JSON-RPC. Вход в Microsoft 365 — у сервера (его кэш токенов), плагин токенов не видит и не хранит: войти один раз —
-`npx -y @softeria/ms-365-mcp-server@<версия> --org-mode --login` (README)."""
+"""An ms365 MCP client (@softeria/ms-365-mcp-server) over stdio: one server process for the whole run, tool calls over
+JSON-RPC. The Microsoft 365 sign-in belongs to the server (its token cache); the plugin neither sees nor stores tokens:
+sign in once with `npx -y @softeria/ms-365-mcp-server@<version> --org-mode --login` (README)."""
 import glob
 import json
 import os
@@ -12,7 +12,7 @@ SERVER = ["-y", "@softeria/ms-365-mcp-server@0.158.0", "--org-mode"]
 
 
 def node_env():
-    """PATH с node: под launchd его часто нет (fnm, nvm, keg-only Homebrew) — ищем сами."""
+    """PATH with node: under launchd it is often missing (fnm, nvm, keg-only Homebrew), so we look for it ourselves."""
     env = dict(os.environ)
     if not shutil.which("node", path=env.get("PATH")):
         for pat in ("/opt/homebrew/Cellar/node@*/*/bin", "/opt/homebrew/bin", "/usr/local/bin",
@@ -27,7 +27,7 @@ def node_env():
 
 class Mcp:
     def __init__(self):
-        self.err = tempfile.TemporaryFile("w+")   # сервер шумит аудитом в stderr: читаем только при сбое
+        self.err = tempfile.TemporaryFile("w+")   # the server logs audit noise to stderr: read only on a failure
         env = node_env()
         npx = shutil.which("npx", path=env.get("PATH")) or "npx"
         self.p = subprocess.Popen([npx, *SERVER], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -45,7 +45,7 @@ class Mcp:
         while True:
             line = self.p.stdout.readline()
             if not line:
-                raise OSError("ms365: сервер закрылся")   # хвост stderr сервера в ошибку не берём: он уходит в канал
+                raise OSError("ms365: server closed")   # the tail of the server stderr stays out of the error: it goes to the channel
             try:
                 m = json.loads(line)
             except ValueError:

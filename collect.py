@@ -1,18 +1,18 @@
-"""Новые сообщения Teams для вкладки «Teams сообщения»: личка (все чужие), групповые чаты — только упоминание владельца
-или ответ на его сообщение, выбранные каналы (во вкладке «Выбрать каналы»; по умолчанию — ни одного) — первые
-сообщения тредов, остальные каналы — упоминания (поиском Graph).
+"""New Teams messages for the "Teams messages" tab: direct messages (everything from others), group chats only when the
+owner is mentioned or his message is replied to, chosen channels ("Choose channels" in the tab; none by default) — the
+first messages of threads, the other channels — mentions (through Graph search).
 
-Источник — ms365 MCP (клиент mcp.Mcp). Каждое сообщение — dict
-{key, box, src, where, from, text, at, link, mention}; key — устойчивый короткий ключ (чат/канал + id сообщения), box —
-переписка, где владелец может ответить (чат или тред канала): его ответ там позже сообщения — сообщение отвечено.
-owner_last — {box: время последнего сообщения владельца}, reacted — ключи сообщений с реакцией владельца (реакция —
-тоже ответ); функции дописывают их по ходу чтения."""
+The source is the ms365 MCP (the mcp.Mcp client). Each message is a dict
+{key, box, src, where, from, text, at, link, mention}; key is a stable short key (chat/channel + message id), box is the
+conversation where the owner can reply (a chat or a channel thread): his reply there after the message means it is
+answered. owner_last is {box: time of the owner's last message}, reacted is the keys of messages with the owner's
+reaction (a reaction is an answer too); the functions fill them in while reading."""
 import hashlib
 import html
 import json
 import re
 
-DEFAULT_WATCH = ()   # (команда, канал) по умолчанию, пока во вкладке не выбрали свои; в общем плагине — ни одного
+DEFAULT_WATCH = ()   # (team, channel) by default until the owner picks in the tab; none in the shared plugin
 TEXT_MAX = 1200
 
 
@@ -21,8 +21,8 @@ def key(container, msg_id):
 
 
 def plain(body):
-    """HTML тела Teams → текст: абзацы и переносы — строками, <at>Имя</at> → @Имя, эмодзи — их alt, цитаты ответа
-    (<attachment>) убираем."""
+    """Teams body HTML -> text: paragraphs and line breaks become lines, <at>Name</at> -> @Name, emoji -> their alt,
+    reply quotes (<attachment>) are dropped."""
     s = body or ""
     s = re.sub(r"<attachment[^>]*>.*?</attachment>", "", s, flags=re.S)
     s = re.sub(r"<emoji[^>]*alt=\"([^\"]*)\"[^>]*>(?:</emoji>)?", r"\1", s)
@@ -44,7 +44,7 @@ def mentions_me(m, me):
 
 
 def replies_to_me(m, me):
-    """Ответ с цитатой (attachment messageReference) на сообщение владельца."""
+    """A quoted reply (attachment messageReference) to the owner's message."""
     for a in m.get("attachments") or []:
         if a.get("contentType") != "messageReference":
             continue
@@ -61,20 +61,20 @@ def reacted_by(m, me):
     return any(((r.get("user") or {}).get("user") or {}).get("id") == me for r in m.get("reactions") or [])
 
 
-# смех, эмодзи, «ок», «спасибо» — отклик на сообщение, не новое сообщение (владелец 12.10: «не надо реакции на
-# сообщения показывать как сообщения»)
+# laughter, emoji, "ok", "thanks": a reaction to a message, not a new message (reactions to messages are not shown as
+# messages). The Russian words match Russian chat input.
 CHATTER = re.compile(r"(а?ха|a?ha|ах|ah)+[хh]*|х+|[ао]?ок(ей)?|ok(ay)?|спс|спасибо|пасиб\w*|благодарю|thanks?|thx|"
                      r"понял[аи]?|ясно|ага|угу|да|yes|yep|лол|lol|кек|ору|топ|огонь|супер|класс|круто")
 
 
 def chatter(text):
-    """Только смех, эмодзи, скобки и короткий отклик — без вопроса и дела."""
+    """Only laughter, emoji, brackets and a short reaction, with no question and nothing to do."""
     words = [w for w in re.split(r"[\W_]+", text.lower()) if w]
     return len(words) <= 2 and all(CHATTER.fullmatch(w) for w in words)
 
 
 def fresh(m, cutoff, me):
-    """Чужое обычное сообщение не старше cutoff (ISO, UTC): не системное, не удалённое, не владельца, есть автор."""
+    """Someone else's ordinary message newer than cutoff (ISO, UTC): not a system one, not deleted, not the owner's, has an author."""
     who = sender(m)
     return (m.get("messageType") == "message" and not m.get("deletedDateTime") and who.get("id")
             and who["id"] != me and (m.get("createdDateTime") or "") > cutoff)
@@ -86,8 +86,8 @@ def mine(m, me, box, owner_last):
 
 
 def chats(mcp, cutoff, me, owner_last, top=30, reacted=None, scan=None):
-    """Чаты с новыми сообщениями. scan — раньше cutoff: заодно перечитать чаты с сообщениями не старше scan, чтобы
-    увидеть ответ или реакцию владельца на уже показанное (новых сообщений из них не берём)."""
+    """Chats with new messages. scan is earlier than cutoff: also re-read chats with messages newer than scan, to see
+    the owner's reply or reaction to an already shown message (no new messages are taken from them)."""
     out = []
     data = mcp.call("list-chats", {"$top": top, "$expand": "lastMessagePreview",
                                    "$orderby": "lastMessagePreview/createdDateTime desc"})
@@ -108,17 +108,17 @@ def chats(mcp, cutoff, me, owner_last, top=30, reacted=None, scan=None):
             if not (dm or mention or reply):
                 continue
             text = plain((m.get("body") or {}).get("content"))
-            if not text or (not (mention or reply) and chatter(text)):   # «да» цитатой на его вопрос — ответ
+            if not text or (not (mention or reply) and chatter(text)):   # a quoted "yes" to his question is an answer
                 continue
             out.append({"key": key(c["id"], m["id"]), "box": box, "src": "dm" if dm else "mention",
-                        "where": "Личка" if dm else (c.get("topic") or "Групповой чат"),
+                        "where": "Direct message" if dm else (c.get("topic") or "Group chat"),
                         "from": sender(m).get("displayName") or "", "text": text, "at": m["createdDateTime"],
                         "link": m.get("webUrl") or c.get("webUrl") or "", "mention": mention})
     return out
 
 
 def directory(mcp):
-    """{channelId: {"team", "teamId", "channel"}} — все каналы команд владельца: выбор во вкладке, имена упоминаний."""
+    """{channelId: {"team", "teamId", "channel"}}: all channels of the owner's teams, for the choice in the tab and the names of mentions."""
     out = {}
     for t in mcp.call("list-joined-teams", {}).get("value", []):
         for ch in mcp.call("list-team-channels", {"teamId": t["id"]}).get("value", []):
@@ -127,14 +127,14 @@ def directory(mcp):
 
 
 def default_watch(channels):
-    """Каналы по умолчанию — channelId из DEFAULT_WATCH, если он есть у владельца."""
+    """Default channels: the channelId of DEFAULT_WATCH, if the owner has it."""
     return [cid for cid, c in channels.items() if DEFAULT_WATCH and (c["team"], c["channel"]) == DEFAULT_WATCH]
 
 
 def channel_posts(mcp, channel, info, cutoff, me, owner_last, top=10, reacted=None):
-    """Выбранный канал. Треды идут по последней активности: смотрим верхние. Только первое сообщение треда (сам пост);
-    ответы внутри треда — только с упоминанием владельца, как упоминание (владелец 09.10: «сообщения внутри поста не
-    надо»). Ответы владельца в треде всё равно читаем — по ним пост помечается отвеченным."""
+    """A chosen channel. Threads come by latest activity: we look at the top ones. Only the first message of a thread
+    (the post itself); replies inside the thread only with a mention of the owner, as a mention. The owner's replies in
+    the thread are read anyway: they mark the post as answered."""
     team, label = info["teamId"], f"{info['team']} › {info['channel']}"
     out = []
     data = mcp.call("list-channel-messages", {"teamId": team, "channelId": channel, "top": top, "expand": "replies"})
@@ -160,16 +160,16 @@ def channel_posts(mcp, channel, info, cutoff, me, owner_last, top=10, reacted=No
 
 
 def bot(mail):
-    """Отправитель — приложение (Workflows, Power Automate, боты): адреса нет или он на teams.microsoft.com."""
+    """The sender is an app (Workflows, Power Automate, bots): no address or one on teams.microsoft.com."""
     address = (mail.get("address") or "").lower()
     return not address or address.endswith("@teams.microsoft.com") or (mail.get("name") or "") in ("Workflows", "Power Automate")
 
 
 def channel_mentions(mcp, cutoff, me_mail, name, channels=None, skip=(), size=25):
-    """Упоминания владельца в каналах — поиском Graph по его имени (обход всех каналов — десятки вызовов в минуту).
-    Поиск находит и сообщения, где он просто участник, поэтому берём только те, где имя есть в самом тексте. Чаты
-    (у них в поиске channelId — это id чата, а teamId нет) читает chats(); боты (Workflows и др., адрес
-    @teams.microsoft.com) — карточки со списком людей, не упоминания (владелец 12.10: «из воркфлоу не надо»)."""
+    """Mentions of the owner in channels, through Graph search by his name (going over all channels would be dozens of
+    calls a minute). Search also finds messages where he is just a participant, so only those with the name in the text
+    itself are taken. Chats (in search their channelId is the chat id and there is no teamId) are read by chats(); bots
+    (Workflows and the like, an @teams.microsoft.com address) post cards with lists of people, not mentions."""
     body = {"requests": [{"entityTypes": ["chatMessage"], "query": {"queryString": name}, "from": 0, "size": size}]}
     data = mcp.call("search-query", {"body": body})
     out = []
@@ -178,7 +178,7 @@ def channel_mentions(mcp, cutoff, me_mail, name, channels=None, skip=(), size=25
             r = h.get("resource") or {}
             ch = r.get("channelIdentity") or {}
             mail = ((r.get("from") or {}).get("emailAddress") or {})
-            if not ch.get("channelId") or not ch.get("teamId") or ch["channelId"] in skip:   # выбранные — в channel_posts()
+            if not ch.get("channelId") or not ch.get("teamId") or ch["channelId"] in skip:   # chosen ones go through channel_posts()
                 continue
             if bot(mail):
                 continue
@@ -189,7 +189,7 @@ def channel_mentions(mcp, cutoff, me_mail, name, channels=None, skip=(), size=25
                 continue
             c = (channels or {}).get(ch["channelId"])
             out.append({"key": key(ch["channelId"], r.get("id")), "box": None, "src": "mention",
-                        "where": f"{c['team']} › {c['channel']}" if c else "Канал Teams",
+                        "where": f"{c['team']} › {c['channel']}" if c else "Teams channel",
                         "from": mail.get("name") or "", "text": summary, "at": r["createdDateTime"],
                         "link": r.get("webLink") or "", "mention": True})
     return out

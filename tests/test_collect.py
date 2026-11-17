@@ -1,5 +1,5 @@
-"""Сборщик «Teams сообщения» без сети: поддельный ms365 MCP. Запуск: python3.12 -m unittest discover -s tests (из папки
-расширения, PYTHONPATH — код хаба)."""
+"""The "Teams messages" collector without a network: a fake ms365 MCP. Run: python3.12 -m unittest discover -s tests (from
+the extension folder, PYTHONPATH — the hub code)."""
 import os
 import sys
 import unittest
@@ -48,47 +48,47 @@ def chat(cid, kind, last, topic=None):
 class Chats(unittest.TestCase):
     def test_dm_all_foreign_group_only_mentions_and_replies(self):
         ref = {"contentType": "messageReference", "content": '{"messageSender": {"user": {"id": "me"}}}'}
-        fake = Fake([chat("d", "oneOnOne", "2026-10-09T10:05:00Z"), chat("g", "group", "2026-10-09T10:06:00Z", "Команда"),
+        fake = Fake([chat("d", "oneOnOne", "2026-10-09T10:05:00Z"), chat("g", "group", "2026-10-09T10:06:00Z", "Team chat"),
                      chat("old", "oneOnOne", "2026-10-09T09:00:00Z")],
-                    {"d": [msg("1", "2026-10-09T10:01:00Z", "alex", "<p>привет&nbsp;<b>Иван</b></p>"),
-                           msg("2", "2026-10-09T10:02:00Z", ME, "мой ответ"),
-                           msg("3", "2026-10-09T09:59:00Z", "alex", "старое")],
-                     "g": [msg("4", "2026-10-09T10:03:00Z", "kate", "болтовня"),
-                           msg("5", "2026-10-09T10:04:00Z", "kate", '<at id="0">Owner</at> глянь', mentions=[ME]),
-                           msg("6", "2026-10-09T10:05:00Z", "ivan", "да", attachments=[ref]),
+                    {"d": [msg("1", "2026-10-09T10:01:00Z", "alex", "<p>hi&nbsp;<b>Sam</b></p>"),
+                           msg("2", "2026-10-09T10:02:00Z", ME, "my reply"),
+                           msg("3", "2026-10-09T09:59:00Z", "alex", "old")],
+                     "g": [msg("4", "2026-10-09T10:03:00Z", "kate", "chit-chat"),
+                           msg("5", "2026-10-09T10:04:00Z", "kate", '<at id="0">Owner</at> take a look', mentions=[ME]),
+                           msg("6", "2026-10-09T10:05:00Z", "ivan", "yes", attachments=[ref]),
                            msg("7", "2026-10-09T10:06:00Z", "ivan", "x", mentions=[ME], deleted=True)]})
         last = {}
         out = collect.chats(fake, CUT, ME, last)
         self.assertEqual([(i["src"], i["text"]) for i in out],
-                         [("dm", "привет Иван"), ("mention", "@Owner глянь"), ("mention", "да")])
-        self.assertEqual(out[0]["where"], "Личка")
-        self.assertEqual(out[1]["where"], "Команда")
+                         [("dm", "hi Sam"), ("mention", "@Owner take a look"), ("mention", "yes")])
+        self.assertEqual(out[0]["where"], "Direct message")
+        self.assertEqual(out[1]["where"], "Team chat")
         self.assertEqual(last[collect.key("d", "")], "2026-10-09T10:02:00Z")
 
 
     def test_owner_reaction_is_an_answer(self):
-        # владелец 12.10: поставил реакцию — сообщение разобрано, как ответ
+        # the owner reacted: the message is handled, like a reply
         fake = Fake([chat("d", "oneOnOne", "2026-10-09T10:05:00Z")],
-                    {"d": [msg("1", "2026-10-09T10:01:00Z", "alex", "глянь MR", reacted_by=[ME]),
-                           msg("2", "2026-10-09T10:02:00Z", "alex", "и ещё вопрос", reacted_by=["kate"])]})
+                    {"d": [msg("1", "2026-10-09T10:01:00Z", "alex", "look at the MR", reacted_by=[ME]),
+                           msg("2", "2026-10-09T10:02:00Z", "alex", "and one more question", reacted_by=["kate"])]})
         reacted = set()
         out = collect.chats(fake, CUT, ME, {}, reacted=reacted)
-        self.assertEqual([i["text"] for i in out], ["глянь MR", "и ещё вопрос"])
+        self.assertEqual([i["text"] for i in out], ["look at the MR", "and one more question"])
         self.assertEqual(reacted, {collect.key("d", "1")})
 
     def test_chatter_is_not_a_message(self):
-        # владелец 12.10: «не надо реакции на сообщения показывать как сообщения» — смех, эмодзи, «ок» в личке
-        texts = ["ахахх)", "ахах)", "))", "👍", "ок", "Спасибо!", "<p>&nbsp;</p>", "да", "лол 😂"]
+        # reactions to messages are not shown as messages: laughter, emoji, "ok" in direct messages (Russian and English input)
+        texts = ["ахахх)", "ахах)", "))", "👍", "ок", "Спасибо!", "<p>&nbsp;</p>", "да", "лол 😂", "haha", "Thanks!", "ok"]
         keep = ["да, сделаю завтра", "ок, а что с MR?", "100% )"]
         fake = Fake([chat("d", "oneOnOne", "2026-10-09T10:05:00Z")],
                     {"d": [msg(str(i), "2026-10-09T10:01:00Z", "alex", t) for i, t in enumerate(texts + keep)]})
         self.assertEqual([i["text"] for i in collect.chats(fake, CUT, ME, {})], keep)
 
     def test_older_chats_rechecked_for_answers_without_old_messages(self):
-        # реакция или ответ владельца в чате, где новых сообщений нет: читаем чат при перепроверке (scan), но старое
-        # сообщение новым не становится
+        # the owner's reaction or reply in a chat with no new messages: the chat is read on the recheck (scan), but the
+        # old message does not become new
         fake = Fake([chat("d", "oneOnOne", "2026-10-09T08:00:00Z")],
-                    {"d": [msg("1", "2026-10-09T08:00:00Z", "alex", "вопрос", reacted_by=[ME])]})
+                    {"d": [msg("1", "2026-10-09T08:00:00Z", "alex", "a question", reacted_by=[ME])]})
         reacted, last = set(), {}
         self.assertEqual(collect.chats(fake, CUT, ME, last, reacted=reacted), [])
         self.assertEqual(reacted, set())
@@ -98,19 +98,19 @@ class Chats(unittest.TestCase):
 
 class ChannelPosts(unittest.TestCase):
     def test_only_thread_root_replies_only_when_mentioning_owner(self):
-        # владелец 09.10: «из саппорта только первое сообщение… сообщения внутри поста не надо»
-        old = msg("r", "2026-10-09T09:00:00Z", "maria", "<p>Странная сумма</p><p>подробности</p>")
-        old["replies"] = [msg("a", "2026-10-09T10:01:00Z", "alex", "смотрим"),
-                          msg("m", "2026-10-09T10:01:30Z", "alex", "@Owner глянь", mentions=[ME]),
-                          msg("b", "2026-10-09T10:02:00Z", ME, "ок")]
-        new = msg("n", "2026-10-09T10:03:00Z", "olga", "Новый вопрос")
-        new["replies"] = [msg("c", "2026-10-09T10:04:00Z", "alex", "ответ в треде")]
+        # a chosen channel: only the first message of a thread, not the replies inside it
+        old = msg("r", "2026-10-09T09:00:00Z", "maria", "<p>Odd amount</p><p>details</p>")
+        old["replies"] = [msg("a", "2026-10-09T10:01:00Z", "alex", "looking"),
+                          msg("m", "2026-10-09T10:01:30Z", "alex", "@Owner take a look", mentions=[ME]),
+                          msg("b", "2026-10-09T10:02:00Z", ME, "ok")]
+        new = msg("n", "2026-10-09T10:03:00Z", "olga", "New question")
+        new["replies"] = [msg("c", "2026-10-09T10:04:00Z", "alex", "a reply in the thread")]
         last = {}
         info = {"teamId": "team", "team": "Company", "channel": "Support"}
         out = collect.channel_posts(Fake(channel=[new, old]), "chan", info, CUT, ME, last)
-        self.assertEqual([(i["src"], i["text"]) for i in out], [("channel", "Новый вопрос"), ("mention", "@Owner глянь")])
+        self.assertEqual([(i["src"], i["text"]) for i in out], [("channel", "New question"), ("mention", "@Owner take a look")])
         self.assertEqual(out[0]["where"], "Company › Support")
-        self.assertIn("Странная сумма", out[1]["where"])
+        self.assertIn("Odd amount", out[1]["where"])
         self.assertEqual(last[collect.key("chan", "r")], "2026-10-09T10:02:00Z")
 
 
@@ -120,21 +120,21 @@ class Mentions(unittest.TestCase):
             return {"summary": summary, "resource": {"id": mid, "createdDateTime": at, "webLink": "l",
                     "channelIdentity": {"channelId": chan, **({"teamId": team} if team else {})} if chan else None,
                     "from": {"emailAddress": {"name": who, "address": address or f"{who}@x"}}}}
-        hits = [hit("1", "c1", "alex", "<c0>Owner</c0> посмотри"), hit("2", "c1", "alex", "без имени"),
-                hit("3", None, "alex", "Owner в чате"), hit("4", "sup", "alex", "Owner в Support"),
-                hit("5", "c1", "me", "Owner сам"), hit("6", "c1", "alex", "Owner", at="2026-10-09T09:00:00Z"),
-                # владелец 12.10: «из воркфлоу не надо» — карточки бота Workflows; у чата в поиске тоже есть
-                # channelId (это id чата), но нет teamId — чаты читает chats()
+        hits = [hit("1", "c1", "alex", "<c0>Owner</c0> have a look"), hit("2", "c1", "alex", "no name"),
+                hit("3", None, "alex", "Owner in a chat"), hit("4", "sup", "alex", "Owner in Support"),
+                hit("5", "c1", "me", "Owner himself"), hit("6", "c1", "alex", "Owner", at="2026-10-09T09:00:00Z"),
+                # Workflows bot cards are not mentions; a chat in search also has a channelId (the chat id) but no
+                # teamId — chats are read by chats()
                 hit("7", "c1", "Workflows", "..., Owner ...", address="Workflows@teams.microsoft.com"),
-                hit("8", "19:a_b@unq.gbl.spaces", "alex", "Owner в личке", team=None)]
+                hit("8", "19:a_b@unq.gbl.spaces", "alex", "Owner in a direct chat", team=None)]
         out = collect.channel_mentions(Fake(hits=hits), CUT, "me@x", "Owner",
                                        {"c1": {"team": "Dev", "channel": "Backend", "teamId": "t"}}, skip={"sup"})
-        self.assertEqual([(i["text"], i["where"]) for i in out], [("Owner посмотри", "Dev › Backend")])
+        self.assertEqual([(i["text"], i["where"]) for i in out], [("Owner have a look", "Dev › Backend")])
 
 
 class Tick(unittest.TestCase):
     def item(self, k, at, box="b"):
-        return {"key": k, "box": box, "src": "dm", "where": "Личка", "from": "P", "text": "t", "at": at,
+        return {"key": k, "box": box, "src": "dm", "where": "Direct message", "from": "P", "text": "t", "at": at,
                 "link": "l", "mention": False}
 
     def test_posts_new_once_and_marks_answered_later(self):
@@ -167,7 +167,7 @@ class Channels(unittest.TestCase):
     CH = {"c1": {"team": "Company", "teamId": "t1", "channel": "Support"},
           "c2": {"team": "Dev", "teamId": "t2", "channel": "Backend"}}
 
-    def setUp(self):   # в общем плагине канала по умолчанию нет; тест задаёт его сам
+    def setUp(self):   # the shared plugin has no default channel; the test sets one itself
         self.saved, collect.DEFAULT_WATCH = collect.DEFAULT_WATCH, ("Company", "Support")
 
     def tearDown(self):
@@ -185,14 +185,14 @@ class Channels(unittest.TestCase):
         self.assertNotIn("default", posts[1])
 
     def test_directory_parts_fit_a_post_even_with_long_names(self):
-        # ревью 09.10: 20 каналов с длинными именами в одной части — пост длиннее 2000, KeyError в post()
+        # 20 channels with long names in one part made a post longer than 2000 and a KeyError in post()
         ch = {f"c{i}": {"team": "Команда " + "я" * 90, "teamId": "t", "channel": "Канал " + "ы" * 90} for i in range(60)}
         _, posts = main.directory_posts(ch, [])
         self.assertTrue(all(len(main.json.dumps(p, ensure_ascii=False)) <= main.POST_MAX for p in posts))
         self.assertEqual(sum(len(p["items"]) for p in posts), 60)
 
     def test_directory_not_reposted_on_every_restart(self):
-        # канал хранит 500 постов: список каналов на каждом перезапуске хаба вытеснял сообщения
+        # the channel keeps 500 posts: the channel list on every hub restart pushed messages out
         class Dir:
             def call(self, tool, args):
                 return {"value": [{"id": "t1", "displayName": "Company"}]} if tool == "list-joined-teams" else \
@@ -202,13 +202,13 @@ class Channels(unittest.TestCase):
         r.mcp = Dir()
         r.refresh(st, ["k"], out.append)
         self.assertEqual([p["kind"] for p in out], ["channels", "watching"])
-        r2 = main.Reader()   # перезапуск: то же состояние, тот же список и выбор — не постим
+        r2 = main.Reader()   # a restart: the same state, list and choice — no post
         r2.mcp = Dir()
         r2.refresh(st, ["k"], out.append)
         self.assertEqual(len(out), 2)
-        r2.refresh(st, ["k", "m"], out.append)   # выбор поменялся — постим
+        r2.refresh(st, ["k", "m"], out.append)   # the choice changed — post
         self.assertEqual(len(out), 4)
-        st["dir_at"] -= main.DIR_EVERY   # давно — постим заново (старый список вытеснен из канала)
+        st["dir_at"] -= main.DIR_EVERY   # long ago — post again (the old list was pushed out of the channel)
         r3 = main.Reader()
         r3.mcp = Dir()
         r3.refresh(st, ["k", "m"], out.append)
@@ -229,17 +229,17 @@ class Channels(unittest.TestCase):
             return json.dumps({"seq": seq, "type": "ext.post", "data": {"plugin": "teams", "text": json.dumps(text), **data}})
         with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as f:
             f.write(ev({"kind": "watch", "ids": ["a"]}, owner=True, channel="web") + "\n")
-            f.write(ev({"kind": "watch", "ids": ["x"]}, channel="session", sender="hub") + "\n")   # не владелец
-            f.write(ev({"kind": "watch", "ids": ["y"]}, channel="plugin", sender="teams") + "\n")  # сам плагин
-            # ревью 09.10: owner:true из чужого процесса плагина — не владелец (ядро: owner is True и его канал)
+            f.write(ev({"kind": "watch", "ids": ["x"]}, channel="session", sender="hub") + "\n")   # not the owner
+            f.write(ev({"kind": "watch", "ids": ["y"]}, channel="plugin", sender="teams") + "\n")  # the plugin itself
+            # owner:true from another plugin's process is not the owner (the core: owner is True and his channel)
             f.write(ev({"kind": "watch", "ids": ["z"]}, owner=True, channel="plugin", sender="x") + "\n")
         c = main.Choice(f.name)
         self.assertEqual(c.poll(), ["a"])
         with open(f.name, "a") as g:
             g.write(ev({"kind": "watch", "ids": ["b", "c"]}, owner=True, channel="web") + "\n")
-            g.write('{"type": "ext.post", "data": {"plu')   # недописанная строка — дочитаем потом
+            g.write('{"type": "ext.post", "data": {"plu')   # an unfinished line — read it later
         self.assertEqual(c.poll(), ["b", "c"])
-        with open(f.name, "a") as g:   # ядро отклонило следующий пост владельца — выбор остаётся прежним
+        with open(f.name, "a") as g:   # the core rejected the owner's next post — the choice stays as it was
             g.write('ignored"}}\n' + ev({"kind": "watch", "ids": ["bad"]}, seq=7, owner=True, channel="web") + "\n")
             g.write(json.dumps({"type": "core.rejected", "data": {"of": 7, "type": "ext.post"}}) + "\n")
         self.assertEqual(c.poll(), ["b", "c"])
@@ -255,8 +255,8 @@ class Channels(unittest.TestCase):
 
 class Safety(unittest.TestCase):
     def test_status_error_drops_ms365_stderr_tail(self):
-        e = OSError("ms365: сервер закрылся: token=secret-abc debug dump")
-        self.assertEqual(main.short(e), "ms365: сервер закрылся")
+        e = OSError("ms365: server closed: token=secret-abc debug dump")
+        self.assertEqual(main.short(e), "ms365: server closed")
 
     def test_non_text_oversized_post_is_dropped_not_raised(self):
         sent = []
